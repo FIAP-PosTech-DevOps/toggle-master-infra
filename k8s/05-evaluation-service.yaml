@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evaluation-service
+  namespace: togglemaster
+  labels:
+    app: evaluation-service
+spec:
+  # 2 réplicas é o minReplicas do HPA. O HPA assume o controle depois, então
+  # este valor só vale para o primeiro rollout.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: evaluation-service
+  template:
+    metadata:
+      labels:
+        app: evaluation-service
+    spec:
+      # Esta SA é criada pelo módulo cluster-addons, já anotada com a role
+      # IRSA que permite sqs:SendMessage. Sem ela o pod usa a SA "default",
+      # não recebe o token OIDC, e a AWS responde AccessDenied.
+      serviceAccountName: evaluation-service-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: evaluation-service
+          image: ${ECR_REGISTRY}/togglemaster/evaluation-service:${IMAGE_TAG}
+          ports:
+            - containerPort: 8004
+              name: http
+          env:
+            - name: PORT
+              value: "8004"
+          envFrom:
+            - configMapRef:
+                name: togglemaster-config
+            - secretRef:
+                name: evaluation-service-secret
+          resources:
+            # Este é o "hot path" e o alvo do HPA por CPU. O request de 100m é
+            # a base do cálculo: com target de 70%, o HPA escala quando o uso
+            # médio passa de 70m por pod.
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: evaluation-service
+  namespace: togglemaster
+spec:
+  type: ClusterIP
+  selector:
+    app: evaluation-service
+  ports:
+    - port: 8004
+      targetPort: 8004
+      name: http

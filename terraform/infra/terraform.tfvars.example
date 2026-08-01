@@ -1,0 +1,17 @@
+# Copie para terraform.tfvars e ajuste. terraform.tfvars está no .gitignore.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+
+# OBRIGATÓRIO — recebe os alertas de orçamento.
+alert_email = "devops.infra.cloud@gmail.com"
+
+# RECOMENDADO — restrinja o acesso ao endpoint do cluster ao seu IP.
+# Descubra o seu com: curl ifconfig.me
+# cluster_endpoint_public_access_cidrs = ["203.0.113.10/32"]
+
+# Todo o resto tem default. Descomente só se quiser mudar:
+# aws_region         = "us-east-1"
+# node_capacity_type = "ON_DEMAND"   # no dia da gravação, sem risco de interrupção Spot
+# node_desired_size  = 2
+# budget_limit_usd   = "80"
+# single_nat_gateway = true

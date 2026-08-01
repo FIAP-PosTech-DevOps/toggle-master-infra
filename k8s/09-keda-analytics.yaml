@@ -1,0 +1,39 @@
+# KEDA no analytics-service: escala pela PROFUNDIDADE DA FILA, não por CPU.
+# É a abordagem correta para um worker orientado a evento — a fila pode ter
+# 500 mensagens acumuladas com a CPU baixa, e o HPA por CPU não perceberia.
+#
+# identityOwner: keda significa que quem consulta o SQS é o pod do operador
+# do KEDA (namespace keda), usando a role IRSA anotada na SA keda-operator
+# pelo helm_release do módulo cluster-addons. NÃO é a SA do analytics-service.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-trigger-auth-aws
+  namespace: togglemaster
+spec:
+  podIdentity:
+    provider: aws
+    identityOwner: keda
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: analytics-service-scaledobject
+  namespace: togglemaster
+spec:
+  scaleTargetRef:
+    name: analytics-service
+  # scale-to-zero: sem mensagem na fila, zero pod rodando e zero consumo.
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 60
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: keda-trigger-auth-aws
+      metadata:
+        queueURL: "${SQS_QUEUE_URL}"
+        awsRegion: "${AWS_REGION}"
+        # 1 pod por cada 5 mensagens pendentes. 50 mensagens => 10 pods (teto).
+        queueLength: "5"

@@ -1,0 +1,19 @@
+# Na maioria dos casos você NÃO precisa de tfvars aqui: este módulo descobre
+# o cluster, a VPC e as roles IRSA sozinho pela convenção de nomes do infra.
+#
+# Crie um terraform.tfvars só se:
+#
+# 1) Você mudou algum destes valores no módulo infra:
+#
+# aws_region    = "us-east-1"
+# project_name  = "togglemaster"
+# environment   = "lab"
+# app_namespace = "togglemaster"
+#
+# 2) O ./check-chart-versions.sh indicou que os defaults das versões de chart
+#    estão defasados para o seu Kubernetes:
+#
+# metrics_server_chart_version = "X.Y.Z"
+# alb_controller_chart_version = "X.Y.Z"
+# ingress_nginx_chart_version  = "X.Y.Z"
+# keda_chart_version           = "X.Y.Z"

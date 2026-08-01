@@ -1,0 +1,31 @@
+# HPA por CPU no evaluation-service — o "hot path" de alta performance.
+# Requer o metrics-server, instalado pelo módulo cluster-addons.
+#
+# Como o request de CPU é 100m e o target é 70%, o HPA cria réplica nova
+# quando o uso médio passa de ~70m por pod.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: evaluation-service-hpa
+  namespace: togglemaster
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: evaluation-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      # Janela curta para a demo ficar visível rápido no vídeo.
+      stabilizationWindowSeconds: 15
+    scaleDown:
+      # Janela longa na descida evita "flapping" quando a carga oscila.
+      stabilizationWindowSeconds: 120

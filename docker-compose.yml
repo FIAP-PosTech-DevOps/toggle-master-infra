@@ -1,0 +1,132 @@
+services:
+  # --- BANCOS DE DADOS RELACIONAIS (POSTGRESQL) ---
+  postgres-auth:
+    image: postgres:15-alpine
+    container_name: postgres-auth
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: auth_db
+    ports:
+      - "5431:5432"
+    volumes:
+      - ../auth-service/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  postgres-flag:
+    image: postgres:15-alpine
+    container_name: postgres-flag
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: flags_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ../flag-service/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  postgres-targeting:
+    image: postgres:15-alpine
+    container_name: postgres-targeting
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: targeting_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - ../targeting-service/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # --- CACHE (REDIS) ---
+  redis:
+    image: redis:7-alpine
+    container_name: redis-cache
+    ports:
+      - "6379:6379"
+
+ # --- SIMULADOR AWS LOCAL (LOCALSTACK) ---
+  localstack:
+    image: localstack/localstack:3.4
+    container_name: localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=sqs,dynamodb
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+  # --- MICROSSERVIÇOS ---
+  auth-service:
+    build: ../auth-service
+    container_name: auth-service
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: "8001"
+      DATABASE_URL: "postgres://postgres:postgrespassword@postgres-auth:5432/auth_db?sslmode=disable"
+      MASTER_KEY: "admin-secreto-123"
+    depends_on:
+      - postgres-auth
+
+  flag-service:
+    build: ../flag-service
+    container_name: flag-service
+    ports:
+      - "8002:8002"
+    environment:
+      PORT: "8002"
+      DATABASE_URL: "postgres://postgres:postgrespassword@postgres-flag:5432/flags_db"
+      AUTH_SERVICE_URL: "http://auth-service:8001"
+    depends_on:
+      - postgres-flag
+      - auth-service
+
+  targeting-service:
+    build: ../targeting-service
+    container_name: targeting-service
+    ports:
+      - "8003:8003"
+    environment:
+      PORT: "8003"
+      DATABASE_URL: "postgres://postgres:postgrespassword@postgres-targeting:5432/targeting_db"
+      AUTH_SERVICE_URL: "http://auth-service:8001"
+    depends_on:
+      - postgres-targeting
+      - auth-service
+
+  evaluation-service:
+    build: ../evaluation-service
+    container_name: evaluation-service
+    ports:
+      - "8004:8004"
+    environment:
+      PORT: "8004"
+      REDIS_URL: "redis://redis:6379"
+      FLAG_SERVICE_URL: "http://flag-service:8002"
+      TARGETING_SERVICE_URL: "http://targeting-service:8003"
+      SERVICE_API_KEY: "tm_key_e03db7ebc7197d1fe442dd614f42fbcd8a68fcc6ff6550077a9a8b5c4380ae13"
+      AWS_SQS_URL: "http://localstack:4566/000000000000/togglemaster-queue"
+      AWS_REGION: "us-east-1"
+      AWS_ACCESS_KEY_ID: "mock_key"
+      AWS_SECRET_ACCESS_KEY: "mock_secret"
+    depends_on:
+      - redis
+      - flag-service
+      - targeting-service
+      - localstack
+
+  analytics-service:
+    build: ../analytics-service
+    container_name: analytics-service
+    ports:
+      - "8005:8005"
+    environment:
+      PORT: "8005"
+      AWS_SQS_URL: "http://localstack:4566/000000000000/togglemaster-queue"
+      AWS_DYNAMODB_TABLE: "ToggleMasterAnalytics"
+      AWS_REGION: "us-east-1"
+      AWS_ACCESS_KEY_ID: "mock_key"
+      AWS_SECRET_ACCESS_KEY: "mock_secret"
+      AWS_ENDPOINT_URL: "http://localstack:4566"
+    depends_on:
+      - localstack

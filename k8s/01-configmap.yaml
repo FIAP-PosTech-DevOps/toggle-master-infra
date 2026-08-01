@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: togglemaster-config
+  namespace: togglemaster
+data:
+  # URLs internas (service discovery do Kubernetes: <service>.<namespace> ou só
+  # <service> quando o chamador está no mesmo namespace).
+  AUTH_SERVICE_URL: "http://auth-service:8001"
+  FLAG_SERVICE_URL: "http://flag-service:8002"
+  TARGETING_SERVICE_URL: "http://targeting-service:8003"
+
+  # Endpoints da AWS — preenchidos pelo deploy.sh a partir dos outputs do
+  # Terraform, porque mudam a cada ciclo de apply/destroy.
+  REDIS_URL: "redis://${REDIS_ENDPOINT}:6379"
+  AWS_SQS_URL: "${SQS_QUEUE_URL}"
+  AWS_DYNAMODB_TABLE: "${DYNAMODB_TABLE}"
+  AWS_REGION: "${AWS_REGION}"
+
+  # AWS_ENDPOINT_URL NÃO é definida de propósito. Ela existe só para apontar
+  # o boto3 para o LocalStack no ambiente local. Ausente, o SDK usa os
+  # endpoints reais da AWS.

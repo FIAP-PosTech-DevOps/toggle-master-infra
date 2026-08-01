@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-service
+  namespace: togglemaster
+  labels:
+    app: analytics-service
+spec:
+  # 1 réplica só para o primeiro rollout. O KEDA assume o controle e pode
+  # levar isso a 0 quando a fila está vazia (scale-to-zero).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analytics-service
+  template:
+    metadata:
+      labels:
+        app: analytics-service
+    spec:
+      # SA com a role IRSA que permite consumir a fila (Receive/Delete) e
+      # gravar no DynamoDB (PutItem) — e nada além disso.
+      serviceAccountName: analytics-service-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: analytics-service
+          image: ${ECR_REGISTRY}/togglemaster/analytics-service:${IMAGE_TAG}
+          ports:
+            - containerPort: 8005
+              name: http
+          env:
+            - name: PORT
+              value: "8005"
+          # Não tem secretRef: este serviço não usa senha nenhuma. Acesso à
+          # AWS vem por IRSA, e os endpoints vêm do ConfigMap.
+          envFrom:
+            - configMapRef:
+                name: togglemaster-config
+          resources:
+            # O mais pesado dos Python: além do gunicorn, carrega o boto3 e
+            # roda uma thread de worker consumindo a fila.
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8005
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8005
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-service
+  namespace: togglemaster
+spec:
+  type: ClusterIP
+  selector:
+    app: analytics-service
+  ports:
+    - port: 8005
+      targetPort: 8005
+      name: http

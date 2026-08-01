@@ -1,0 +1,20 @@
+# NUNCA commite state: ele contém endpoints, IDs e potencialmente valores
+# sensíveis em texto puro.
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Atenção: .terraform.lock.hcl NÃO entra aqui — esse arquivo DEVE ser
+# commitado. Ele fixa os hashes das versões de provider, garantindo que
+# você e o resto do grupo usem exatamente os mesmos binários.
+
+# tfvars pode conter e-mail, IP e outros valores só seus.
+terraform.tfvars
+*.auto.tfvars
+
+# Arquivos de plano salvos
+*.tfplan
+
+crash.log
+override.tf
+override.tf.json
