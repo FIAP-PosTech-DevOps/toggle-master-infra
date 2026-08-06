@@ -80,10 +80,11 @@ ToggleMaster/
 ```
 
 ```bash
-mkdir ToggleMaster && cd ToggleMaster
-for r in toggle-master-infra auth-service flag-service targeting-service evaluation-service analytics-service; do
-  git clone https://github.com/FIAP-POS-TECH-CHALLENGE/$r.git $r
-done
+mkdir ToggleMaster
+cd ToggleMaster
+"toggle-master-infra","auth-service","flag-service","targeting-service","evaluation-service","analytics-service" | ForEach-Object {
+  git clone https://github.com/FIAP-PosTech-DevOps/$_.git
+}
 ```
 
 ### 2.2 Variável de atalho
