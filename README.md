@@ -25,12 +25,11 @@ Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 m
 
 | Serviço | Linguagem | Porta | Persistência | Repositório |
 |---|---|---|---|---|
-| auth-service | Go | 8001 | PostgreSQL | [auth-service](https://github.com/FIAP-POS-TECH-CHALLENGE/auth-service) |
-| flag-service | Python | 8002 | PostgreSQL | [flag-service](https://github.com/FIAP-POS-TECH-CHALLENGE/flag-service) |
-| targeting-service | Python | 8003 | PostgreSQL | [targeting-service](https://github.com/FIAP-POS-TECH-CHALLENGE/targeting-service) |
-| evaluation-service | Go | 8004 | Redis (cache) | [evaluation-service](https://github.com/FIAP-POS-TECH-CHALLENGE/evaluation-service) |
-| analytics-service | Python | 8005 | DynamoDB | [analytics-service](https://github.com/FIAP-POS-TECH-CHALLENGE/analytics-service) |
-
+| auth-service | Go | 8001 | PostgreSQL | [auth-service](https://github.com/FIAP-PosTech-DevOps/auth-service) |
+| flag-service | Python | 8002 | PostgreSQL | [flag-service](https://github.com/FIAP-PosTech-DevOps/flag-service) |
+| targeting-service | Python | 8003 | PostgreSQL | [targeting-service](https://github.com/FIAP-PosTech-DevOps/targeting-service) |
+| evaluation-service | Go | 8004 | Redis (cache) | [evaluation-service](https://github.com/FIAP-PosTech-DevOps/evaluation-service) |
+| analytics-service | Python | 8005 | DynamoDB | [analytics-service](https://github.com/FIAP-PosTech-DevOps/analytics-service) |
 ### Fluxo de uma avaliação
 
 ```
