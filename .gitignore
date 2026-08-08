@@ -1,0 +1,8 @@
+# Credenciais do ambiente local. O .env.example, sim, é versionado.
+.env
+.env.local
+
+# Artefatos de instalação de ferramentas
+awscliv2.zip
+aws/
+kubectl

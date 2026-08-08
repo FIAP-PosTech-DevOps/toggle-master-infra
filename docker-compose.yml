@@ -1,12 +1,35 @@
+# Ambiente local de desenvolvimento.
+#
+# Não use este arquivo diretamente na primeira vez. Rode:
+#
+#     ./local-bootstrap.sh
+#
+# Ele cria o .env, gera as credenciais, sobe tudo e emite a SERVICE_API_KEY.
+# Valores sensíveis vêm do .env, que NÃO é versionado.
+#
+# A sintaxe ${VAR:?mensagem} faz o compose falhar com erro claro se a
+# variável estiver ausente, em vez de subir o serviço com valor vazio e
+# quebrar só na primeira requisição. A mensagem aponta para o script que
+# resolve — inclusive para quem rodar `docker compose` antes de ter .env.
+
 services:
   # --- BANCOS DE DADOS RELACIONAIS (POSTGRESQL) ---
   postgres-auth:
     image: postgres:15-alpine
     container_name: postgres-auth
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?rode ./local-bootstrap.sh}
       POSTGRES_DB: auth_db
+    healthcheck:
+      # pg_isready responde OK só quando o banco aceita conexões.
+      # Sem isto, o depends_on liberaria o serviço assim que o
+      # container iniciasse — antes do Postgres estar pronto.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d auth_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
     ports:
       - "5431:5432"
     volumes:
@@ -16,9 +39,18 @@ services:
     image: postgres:15-alpine
     container_name: postgres-flag
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?rode ./local-bootstrap.sh}
       POSTGRES_DB: flags_db
+    healthcheck:
+      # pg_isready responde OK só quando o banco aceita conexões.
+      # Sem isto, o depends_on liberaria o serviço assim que o
+      # container iniciasse — antes do Postgres estar pronto.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d flags_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
     ports:
       - "5432:5432"
     volumes:
@@ -28,9 +60,18 @@ services:
     image: postgres:15-alpine
     container_name: postgres-targeting
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?rode ./local-bootstrap.sh}
       POSTGRES_DB: targeting_db
+    healthcheck:
+      # pg_isready responde OK só quando o banco aceita conexões.
+      # Sem isto, o depends_on liberaria o serviço assim que o
+      # container iniciasse — antes do Postgres estar pronto.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d targeting_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
     ports:
       - "5433:5432"
     volumes:
@@ -42,8 +83,13 @@ services:
     container_name: redis-cache
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
 
- # --- SIMULADOR AWS LOCAL (LOCALSTACK) ---
+  # --- SIMULADOR AWS LOCAL (LOCALSTACK) ---
   localstack:
     image: localstack/localstack:3.4
     container_name: localstack
@@ -63,10 +109,16 @@ services:
       - "8001:8001"
     environment:
       PORT: "8001"
-      DATABASE_URL: "postgres://postgres:postgrespassword@postgres-auth:5432/auth_db?sslmode=disable"
-      MASTER_KEY: "admin-secreto-123"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?rode ./local-bootstrap.sh}@postgres-auth:5432/auth_db?sslmode=disable"
+      # Protege o endpoint /admin/keys, que CRIA credenciais de serviço.
+      MASTER_KEY: ${MASTER_KEY:?rode ./local-bootstrap.sh}
+    # Espera o Postgres aceitar conexões, não só o container iniciar.
+    # Sem isto o auth-service morre no boot com log.Fatal, e como não há
+    # política de restart ele não volta.
     depends_on:
-      - postgres-auth
+      postgres-auth:
+        condition: service_healthy
+    restart: on-failure
 
   flag-service:
     build: ../flag-service
@@ -75,11 +127,14 @@ services:
       - "8002:8002"
     environment:
       PORT: "8002"
-      DATABASE_URL: "postgres://postgres:postgrespassword@postgres-flag:5432/flags_db"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?rode ./local-bootstrap.sh}@postgres-flag:5432/flags_db"
       AUTH_SERVICE_URL: "http://auth-service:8001"
     depends_on:
-      - postgres-flag
-      - auth-service
+      postgres-flag:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    restart: on-failure
 
   targeting-service:
     build: ../targeting-service
@@ -88,11 +143,14 @@ services:
       - "8003:8003"
     environment:
       PORT: "8003"
-      DATABASE_URL: "postgres://postgres:postgrespassword@postgres-targeting:5432/targeting_db"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?rode ./local-bootstrap.sh}@postgres-targeting:5432/targeting_db"
       AUTH_SERVICE_URL: "http://auth-service:8001"
     depends_on:
-      - postgres-targeting
-      - auth-service
+      postgres-targeting:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    restart: on-failure
 
   evaluation-service:
     build: ../evaluation-service
@@ -104,16 +162,27 @@ services:
       REDIS_URL: "redis://redis:6379"
       FLAG_SERVICE_URL: "http://flag-service:8002"
       TARGETING_SERVICE_URL: "http://targeting-service:8003"
-      SERVICE_API_KEY: "tm_key_e03db7ebc7197d1fe442dd614f42fbcd8a68fcc6ff6550077a9a8b5c4380ae13"
+      # Vazia por padrão: a chave só existe depois que o auth-service sobe e
+      # alguém chama POST /admin/keys. Use ./local-bootstrap.sh.
+      SERVICE_API_KEY: ${SERVICE_API_KEY:-}
       AWS_SQS_URL: "http://localstack:4566/000000000000/togglemaster-queue"
       AWS_REGION: "us-east-1"
+      # Credenciais falsas: o LocalStack não valida, mas o AWS SDK recusa a
+      # iniciar sem elas. Na AWS real não existem — o acesso é por IRSA.
       AWS_ACCESS_KEY_ID: "mock_key"
       AWS_SECRET_ACCESS_KEY: "mock_secret"
+    # flag e targeting são chamados em runtime, não no boot: service_started
+    # basta e evita serializar a subida à toa.
     depends_on:
-      - redis
-      - flag-service
-      - targeting-service
-      - localstack
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      flag-service:
+        condition: service_started
+      targeting-service:
+        condition: service_started
+    restart: on-failure
 
   analytics-service:
     build: ../analytics-service
@@ -127,6 +196,10 @@ services:
       AWS_REGION: "us-east-1"
       AWS_ACCESS_KEY_ID: "mock_key"
       AWS_SECRET_ACCESS_KEY: "mock_secret"
+      # Só existe no ambiente local: aponta o boto3 para o LocalStack.
+      # Ausente na AWS, o SDK usa os endpoints reais.
       AWS_ENDPOINT_URL: "http://localstack:4566"
     depends_on:
-      - localstack
+      localstack:
+        condition: service_healthy
+    restart: on-failure
