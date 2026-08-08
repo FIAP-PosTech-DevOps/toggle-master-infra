@@ -30,6 +30,7 @@ Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 m
 | targeting-service | Python | 8003 | PostgreSQL | [targeting-service](https://github.com/FIAP-PosTech-DevOps/targeting-service) |
 | evaluation-service | Go | 8004 | Redis (cache) | [evaluation-service](https://github.com/FIAP-PosTech-DevOps/evaluation-service) |
 | analytics-service | Python | 8005 | DynamoDB | [analytics-service](https://github.com/FIAP-PosTech-DevOps/analytics-service) |
+
 ### Fluxo de uma avaliação
 
 ```
@@ -79,11 +80,10 @@ ToggleMaster/
 ```
 
 ```bash
-mkdir ToggleMaster
-cd ToggleMaster
-"toggle-master-infra","auth-service","flag-service","targeting-service","evaluation-service","analytics-service" | ForEach-Object {
-  git clone https://github.com/FIAP-PosTech-DevOps/$_.git
-}
+mkdir ToggleMaster && cd ToggleMaster
+for r in toggle-master-infra auth-service flag-service targeting-service evaluation-service analytics-service; do
+  git clone https://github.com/FIAP-POS-TECH-CHALLENGE/$r.git $r
+done
 ```
 
 ### 2.2 Variável de atalho
@@ -242,9 +242,71 @@ cluster_endpoint_public_access_cidrs = ["SEU.IP.PUBLICO/32"]
 
 - **`alert_email`** — recebe os alertas de orçamento (50%, 80% e previsão de 100%)
 - **`cluster_version`** — confira as versões em standard support com `aws eks describe-cluster-versions --output table`. Uma versão em *extended support* custa **US$0,60/hora** em vez de US$0,10 — seis vezes mais
-- **`cluster_endpoint_public_access_cidrs`** — seu IP público (`curl checkip.amazonaws.com`), com `/32` no final
+- **`cluster_endpoint_public_access_cidrs`** — seu IP público, com `/32` no final. Descubra com:
+
+```bash
+curl -s checkip.amazonaws.com
+```
 
 > Contas criadas a partir de 15/07/2025 entram no *free plan* e só conseguem lançar `t3.micro`, `t3.small`, `t4g.micro`, `t4g.small`, `c7i-flex.large` e `m7i-flex.large`. O default do projeto é `c7i-flex.large`. Confirme a sua lista com `aws ec2 describe-instance-types --filters Name=free-tier-eligible,Values=true --query 'InstanceTypes[].InstanceType' --output text`.
+
+### 2.7 Quando o seu IP mudar
+
+IP residencial é dinâmico: o provedor troca sozinho, e trocar de rede (celular, VPN, outro wi-fi) também muda. Quando isso acontece, o `kubectl` para de responder com **`i/o timeout`** — seus pacotes passam a ser descartados pela allowlist do endpoint.
+
+O tipo do erro identifica a causa sem investigação:
+
+| Erro do kubectl | Causa |
+|---|---|
+| `i/o timeout` | **seu IP não está na allowlist** |
+| `no such host` | o cluster não existe (foi destruído) |
+| `connection refused` em `localhost:8080` | kubeconfig sem contexto ativo |
+
+**Verificar:**
+
+```bash
+cd $INFRA/terraform/infra
+
+echo "IP atual:    $(curl -s checkip.amazonaws.com)"
+echo "IP liberado: $(grep cluster_endpoint terraform.tfvars)"
+```
+
+**Atualizar**, se forem diferentes:
+
+```bash
+IP_NOVO=$(curl -s checkip.amazonaws.com)
+sed -i -E "s|cluster_endpoint_public_access_cidrs = \[\"[0-9./]+\"\]|cluster_endpoint_public_access_cidrs = [\"$IP_NOVO/32\"]|" terraform.tfvars
+
+grep cluster_endpoint terraform.tfvars    # confira antes de aplicar
+terraform apply                            # deve mostrar "1 to change, 0 to destroy"
+```
+
+Leva 1-2 minutos e não recria nada — só atualiza a configuração de acesso do endpoint.
+
+```bash
+kubectl get nodes
+```
+
+**Se você alterna entre redes conhecidas**, liste todas em vez de trocar toda vez:
+
+```hcl
+cluster_endpoint_public_access_cidrs = [
+  "200.102.105.118/32",   # casa
+  "203.0.113.42/32",      # escritório
+]
+```
+
+**Se o valor no tfvars já estiver correto** e mesmo assim der timeout, confirme o que a AWS realmente aplicou — pode divergir se o último `apply` não completou:
+
+```bash
+aws eks describe-cluster --name togglemaster-lab-cluster --region us-east-1 \
+  --query 'cluster.resourcesVpcConfig.[endpointPublicAccess,publicAccessCidrs]'
+
+aws eks describe-cluster --name togglemaster-lab-cluster --region us-east-1 \
+  --query 'cluster.status' --output text     # precisa estar ACTIVE
+```
+
+Esses comandos falam com a API da AWS, não com o endpoint do Kubernetes — funcionam mesmo com o `kubectl` bloqueado.
 
 ---
 
@@ -380,7 +442,53 @@ Os repositórios ECR são **IMMUTABLE**: subir `:v1` uma segunda vez falha de pr
 
 O script carrega os `init.sql` nos 3 bancos, gera ConfigMap e Secrets a partir dos outputs do Terraform, sobe o auth-service, cria a `SERVICE_API_KEY` via `POST /admin/keys` e então sobe os outros 4 serviços, o Ingress, o HPA e o KEDA.
 
-A `MASTER_KEY` impressa no final é gerada aleatoriamente a cada deploy. Não precisa anotá-la: ela fica no Secret `auth-service-secret` e o `env.sh` a recupera de lá.
+A `MASTER_KEY` é gerada na primeira execução e preservada nas seguintes. Não precisa anotá-la: fica no Secret `auth-service-secret` e o `env.sh` a recupera de lá.
+
+### Deploy parcial
+
+No dia a dia você raramente redeploya tudo — corrige o que mudou e sobe só isso. Os dois scripts aceitam lista de serviços:
+
+```bash
+cd $INFRA/k8s
+
+# um serviço
+./build-and-push.sh v2 flag-service
+./deploy-service.sh flag-service v2
+
+# dois ou três
+./build-and-push.sh v2 flag-service targeting-service
+./deploy-service.sh flag-service targeting-service v2
+
+# tudo
+./build-and-push.sh v2
+./deploy.sh v2
+```
+
+A ordem dos argumentos é livre — nomes de serviço são reconhecidos pela lista conhecida e o argumento restante vira a tag. Com vários serviços, o `deploy-service.sh` reordena por dependência (auth-service primeiro) e imprime um resumo com ✓ e ✗ ao final, mostrando onde parou caso algum falhe.
+
+Ele não toca nos outros serviços, no Ingress nem no ConfigMap compartilhado. Antes de aplicar, confere se a imagem existe no ECR — evita subir um Deployment que ficaria em `ImagePullBackOff`.
+
+Cada serviço pode estar numa tag diferente. Para ver o que está rodando:
+
+```bash
+kubectl get deploy -n togglemaster \
+  -o custom-columns='SERVIÇO:.metadata.name,IMAGEM:.spec.template.spec.containers[0].image'
+```
+
+**Rollback**, se a versão nova tiver problema:
+
+```bash
+kubectl rollout undo deploy/flag-service -n togglemaster
+kubectl rollout history deploy/flag-service -n togglemaster
+```
+
+Casos particulares:
+
+| Situação | Comando |
+|---|---|
+| Recarregar o schema de um banco | `./deploy-service.sh flag-service v2 --with-schema` |
+| Rotacionar a `SERVICE_API_KEY` | `./bootstrap-apikey.sh --force` |
+| Ver as opções do script | `./deploy-service.sh --help` |
 
 ---
 
@@ -849,6 +957,7 @@ tipo/escopo-descricao-nome
 | `AccessDenied` em `aws_budgets_budget` | falta liberar o acesso do IAM ao billing (ver 2.5) |
 | `not eligible for Free Tier` no node group | tipo de instância fora da lista do free plan (ver 2.6) |
 | erro de CIDR inválido | octeto acima de 255 em `cluster_endpoint_public_access_cidrs` |
+| `kubectl` com `i/o timeout` | seu IP público mudou e saiu da allowlist — ver [2.7](#27-quando-o-seu-ip-mudar) |
 | blocos `set` marcados em vermelho no VS Code | falta rodar `terraform init` na pasta — o language server valida contra o schema mais recente |
 | `context deadline exceeded` em `helm_release` | pods não ficaram prontos; investigue com `kubectl get pods -n <ns>` |
 | erro de TLS no webhook do ALB controller após upgrade | certificado dessincronizado: `kubectl rollout restart deploy/aws-load-balancer-controller -n kube-system` |
