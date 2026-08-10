@@ -173,6 +173,8 @@ services:
       AWS_SECRET_ACCESS_KEY: "mock_secret"
     # flag e targeting são chamados em runtime, não no boot: service_started
     # basta e evita serializar a subida à toa.
+      AWS_ENDPOINT_URL: "http://localstack:4566"
+
     depends_on:
       redis:
         condition: service_healthy

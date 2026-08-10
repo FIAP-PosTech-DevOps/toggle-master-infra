@@ -1,0 +1,581 @@
+{
+  "info": {
+    "name": "ToggleMaster - Fase 2 (local)",
+    "description": "Coleção para testar os 5 microsserviços do ToggleMaster rodando via Docker Compose.\n\nOrdem sugerida: execute a pasta '1. Setup' primeiro (cria a chave de API e salva na variável api_key automaticamente), depois as demais.\n\nRotas confirmadas a partir do código-fonte dos serviços.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "07af24cb-4de0-4025-b74d-42b54dbf2a71"
+  },
+  "variable": [
+    {
+      "key": "auth_url",
+      "value": "http://localhost:8001"
+    },
+    {
+      "key": "flag_url",
+      "value": "http://localhost:8002"
+    },
+    {
+      "key": "targeting_url",
+      "value": "http://localhost:8003"
+    },
+    {
+      "key": "evaluation_url",
+      "value": "http://localhost:8004"
+    },
+    {
+      "key": "analytics_url",
+      "value": "http://localhost:8005"
+    },
+    {
+      "key": "master_key",
+      "value": "admin-secreto-123"
+    },
+    {
+      "key": "api_key",
+      "value": ""
+    },
+    {
+      "key": "flag_name",
+      "value": "novo-simulador"
+    },
+    {
+      "key": "user_id",
+      "value": "user-12345"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Health checks",
+      "item": [
+        {
+          "name": "auth-service /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{auth_url}}/health",
+              "host": [
+                "{{auth_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Verifica se o auth-service está no ar."
+          },
+          "response": []
+        },
+        {
+          "name": "flag-service /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{flag_url}}/health",
+              "host": [
+                "{{flag_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Verifica se o flag-service está no ar."
+          },
+          "response": []
+        },
+        {
+          "name": "targeting-service /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{targeting_url}}/health",
+              "host": [
+                "{{targeting_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Verifica se o targeting-service está no ar."
+          },
+          "response": []
+        },
+        {
+          "name": "evaluation-service /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{evaluation_url}}/health",
+              "host": [
+                "{{evaluation_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Verifica se o evaluation-service está no ar."
+          },
+          "response": []
+        },
+        {
+          "name": "analytics-service /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{analytics_url}}/health",
+              "host": [
+                "{{analytics_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Verifica se o analytics-service está no ar."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "1. Setup - criar chave de API",
+      "item": [
+        {
+          "name": "Criar chave de API",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{master_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{auth_url}}/admin/keys",
+              "host": [
+                "{{auth_url}}"
+              ],
+              "path": [
+                "admin",
+                "keys"
+              ]
+            },
+            "description": "Cria uma chave de API usando a master key. A chave retornada é salva automaticamente na variável {{api_key}} da coleção.\n\nProtegido pelo middleware masterKeyAuthMiddleware: exige Authorization Bearer com a MASTER_KEY definida no docker-compose.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"postman-local\"\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.key) {",
+                  "    pm.collectionVariables.set('api_key', json.key);",
+                  "    console.log('api_key salva: ' + json.key);",
+                  "} else {",
+                  "    console.log('Resposta sem campo key — confira o formato: ' + JSON.stringify(json));",
+                  "}",
+                  "pm.test('Chave criada', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validar chave de API",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{auth_url}}/validate",
+              "host": [
+                "{{auth_url}}"
+              ],
+              "path": [
+                "validate"
+              ]
+            },
+            "description": "Valida a chave salva em {{api_key}}. Usado internamente pelos outros serviços para autenticar requisições."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Flags (flag-service)",
+      "item": [
+        {
+          "name": "Criar flag",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{flag_url}}/flags",
+              "host": [
+                "{{flag_url}}"
+              ],
+              "path": [
+                "flags"
+              ]
+            },
+            "description": "Cria uma feature flag. Campos: name (obrigatório), description e is_enabled (opcionais, is_enabled default false).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{flag_name}}\",\n  \"description\": \"Habilita a nova tela de simulacao\",\n  \"is_enabled\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Listar flags",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{flag_url}}/flags",
+              "host": [
+                "{{flag_url}}"
+              ],
+              "path": [
+                "flags"
+              ]
+            },
+            "description": "Lista todas as feature flags cadastradas."
+          },
+          "response": []
+        },
+        {
+          "name": "Buscar flag por nome",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{flag_url}}/flags/{{flag_name}}",
+              "host": [
+                "{{flag_url}}"
+              ],
+              "path": [
+                "flags",
+                "{{flag_name}}"
+              ]
+            },
+            "description": "Busca uma flag específica pelo nome."
+          },
+          "response": []
+        },
+        {
+          "name": "Atualizar flag",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{flag_url}}/flags/{{flag_name}}",
+              "host": [
+                "{{flag_url}}"
+              ],
+              "path": [
+                "flags",
+                "{{flag_name}}"
+              ]
+            },
+            "description": "Atualiza a descrição ou o status is_enabled da flag.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Descricao atualizada\",\n  \"is_enabled\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Deletar flag",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{flag_url}}/flags/{{flag_name}}",
+              "host": [
+                "{{flag_url}}"
+              ],
+              "path": [
+                "flags",
+                "{{flag_name}}"
+              ]
+            },
+            "description": "Remove a flag. Rode por último — o evaluate depende dela."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Regras de segmentação (targeting-service)",
+      "item": [
+        {
+          "name": "Criar regra",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{targeting_url}}/rules",
+              "host": [
+                "{{targeting_url}}"
+              ],
+              "path": [
+                "rules"
+              ]
+            },
+            "description": "Cria a regra de segmentação de uma flag. Campos obrigatórios: flag_name e rules (objeto JSON).\n\nO objeto rules tem type e value — ex: type PERCENTAGE com value 50 libera para 50% dos usuários.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"flag_name\": \"{{flag_name}}\",\n  \"is_enabled\": true,\n  \"rules\": {\n    \"type\": \"PERCENTAGE\",\n    \"value\": 50\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Buscar regra da flag",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{targeting_url}}/rules/{{flag_name}}",
+              "host": [
+                "{{targeting_url}}"
+              ],
+              "path": [
+                "rules",
+                "{{flag_name}}"
+              ]
+            },
+            "description": "Busca a regra de segmentação de uma flag."
+          },
+          "response": []
+        },
+        {
+          "name": "Atualizar regra",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{targeting_url}}/rules/{{flag_name}}",
+              "host": [
+                "{{targeting_url}}"
+              ],
+              "path": [
+                "rules",
+                "{{flag_name}}"
+              ]
+            },
+            "description": "Atualiza a regra existente — útil para simular rollout gradual (10% → 50% → 100%).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_enabled\": true,\n  \"rules\": {\n    \"type\": \"PERCENTAGE\",\n    \"value\": 100\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Deletar regra",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{targeting_url}}/rules/{{flag_name}}",
+              "host": [
+                "{{targeting_url}}"
+              ],
+              "path": [
+                "rules",
+                "{{flag_name}}"
+              ]
+            },
+            "description": "Remove a regra de segmentação da flag."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Avaliação (evaluation-service)",
+      "item": [
+        {
+          "name": "Avaliar flag para um usuário",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{evaluation_url}}/evaluate?user_id={{user_id}}&flag_name={{flag_name}}",
+              "host": [
+                "{{evaluation_url}}"
+              ],
+              "path": [
+                "evaluate"
+              ],
+              "query": [
+                {
+                  "key": "user_id",
+                  "value": "{{user_id}}"
+                },
+                {
+                  "key": "flag_name",
+                  "value": "{{flag_name}}"
+                }
+              ]
+            },
+            "description": "Hot path do sistema. Recebe user_id e flag_name como QUERY PARAMETERS (não body).\n\nO serviço consulta o cache Redis; se não houver, busca no flag-service e no targeting-service, combina a decisão, devolve true/false e publica o evento na fila SQS de forma assíncrona.\n\nSe a flag ou a regra não existir, devolve false (comportamento seguro)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Resposta 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "console.log('Decisao: ' + pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Avaliar com outro usuário",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{evaluation_url}}/evaluate?user_id=user-99999&flag_name={{flag_name}}",
+              "host": [
+                "{{evaluation_url}}"
+              ],
+              "path": [
+                "evaluate"
+              ],
+              "query": [
+                {
+                  "key": "user_id",
+                  "value": "user-99999"
+                },
+                {
+                  "key": "flag_name",
+                  "value": "{{flag_name}}"
+                }
+              ]
+            },
+            "description": "Mesma flag, usuário diferente. Com regra PERCENTAGE, usuários distintos podem receber decisões distintas — é assim que o rollout gradual funciona."
+          },
+          "response": []
+        },
+        {
+          "name": "Avaliar flag inexistente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{evaluation_url}}/evaluate?user_id={{user_id}}&flag_name=flag-que-nao-existe",
+              "host": [
+                "{{evaluation_url}}"
+              ],
+              "path": [
+                "evaluate"
+              ],
+              "query": [
+                {
+                  "key": "user_id",
+                  "value": "{{user_id}}"
+                },
+                {
+                  "key": "flag_name",
+                  "value": "flag-que-nao-existe"
+                }
+              ]
+            },
+            "description": "Testa o comportamento seguro: flag que não existe deve devolver false, não erro."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
