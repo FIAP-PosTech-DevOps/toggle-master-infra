@@ -25,11 +25,12 @@ Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 m
 
 | Serviço | Linguagem | Porta | Persistência | Repositório |
 |---|---|---|---|---|
-| auth-service | Go | 8001 | PostgreSQL | [auth-service](https://github.com/FIAP-PosTech-DevOps/auth-service) |
-| flag-service | Python | 8002 | PostgreSQL | [flag-service](https://github.com/FIAP-PosTech-DevOps/flag-service) |
-| targeting-service | Python | 8003 | PostgreSQL | [targeting-service](https://github.com/FIAP-PosTech-DevOps/targeting-service) |
-| evaluation-service | Go | 8004 | Redis (cache) | [evaluation-service](https://github.com/FIAP-PosTech-DevOps/evaluation-service) |
-| analytics-service | Python | 8005 | DynamoDB | [analytics-service](https://github.com/FIAP-PosTech-DevOps/analytics-service) |
+| auth-service | Go | 8001 | PostgreSQL | [auth-service](https://github.com/FIAP-POS-TECH-CHALLENGE/auth-service) |
+| flag-service | Python | 8002 | PostgreSQL | [flag-service](https://github.com/FIAP-POS-TECH-CHALLENGE/flag-service) |
+| targeting-service | Python | 8003 | PostgreSQL | [targeting-service](https://github.com/FIAP-POS-TECH-CHALLENGE/targeting-service) |
+| evaluation-service | Go | 8004 | Redis (cache) | [evaluation-service](https://github.com/FIAP-POS-TECH-CHALLENGE/evaluation-service) |
+| analytics-service | Python | 8005 | DynamoDB | [analytics-service](https://github.com/FIAP-POS-TECH-CHALLENGE/analytics-service) |
+
 ### Fluxo de uma avaliação
 
 ```
@@ -79,11 +80,10 @@ ToggleMaster/
 ```
 
 ```bash
-mkdir ToggleMaster
-cd ToggleMaster
-"toggle-master-infra","auth-service","flag-service","targeting-service","evaluation-service","analytics-service" | ForEach-Object {
-  git clone https://github.com/FIAP-PosTech-DevOps/$_.git
-}
+mkdir ToggleMaster && cd ToggleMaster
+for r in toggle-master-infra auth-service flag-service targeting-service evaluation-service analytics-service; do
+  git clone https://github.com/FIAP-POS-TECH-CHALLENGE/$r.git $r
+done
 ```
 
 ### 2.2 Variável de atalho
@@ -242,9 +242,71 @@ cluster_endpoint_public_access_cidrs = ["SEU.IP.PUBLICO/32"]
 
 - **`alert_email`** — recebe os alertas de orçamento (50%, 80% e previsão de 100%)
 - **`cluster_version`** — confira as versões em standard support com `aws eks describe-cluster-versions --output table`. Uma versão em *extended support* custa **US$0,60/hora** em vez de US$0,10 — seis vezes mais
-- **`cluster_endpoint_public_access_cidrs`** — seu IP público (`curl checkip.amazonaws.com`), com `/32` no final
+- **`cluster_endpoint_public_access_cidrs`** — seu IP público, com `/32` no final. Descubra com:
+
+```bash
+curl -s checkip.amazonaws.com
+```
 
 > Contas criadas a partir de 15/07/2025 entram no *free plan* e só conseguem lançar `t3.micro`, `t3.small`, `t4g.micro`, `t4g.small`, `c7i-flex.large` e `m7i-flex.large`. O default do projeto é `c7i-flex.large`. Confirme a sua lista com `aws ec2 describe-instance-types --filters Name=free-tier-eligible,Values=true --query 'InstanceTypes[].InstanceType' --output text`.
+
+### 2.7 Quando o seu IP mudar
+
+IP residencial é dinâmico: o provedor troca sozinho, e trocar de rede (celular, VPN, outro wi-fi) também muda. Quando isso acontece, o `kubectl` para de responder com **`i/o timeout`** — seus pacotes passam a ser descartados pela allowlist do endpoint.
+
+O tipo do erro identifica a causa sem investigação:
+
+| Erro do kubectl | Causa |
+|---|---|
+| `i/o timeout` | **seu IP não está na allowlist** |
+| `no such host` | o cluster não existe (foi destruído) |
+| `connection refused` em `localhost:8080` | kubeconfig sem contexto ativo |
+
+**Verificar:**
+
+```bash
+cd $INFRA/terraform/infra
+
+echo "IP atual:    $(curl -s checkip.amazonaws.com)"
+echo "IP liberado: $(grep cluster_endpoint terraform.tfvars)"
+```
+
+**Atualizar**, se forem diferentes:
+
+```bash
+IP_NOVO=$(curl -s checkip.amazonaws.com)
+sed -i -E "s|cluster_endpoint_public_access_cidrs = \[\"[0-9./]+\"\]|cluster_endpoint_public_access_cidrs = [\"$IP_NOVO/32\"]|" terraform.tfvars
+
+grep cluster_endpoint terraform.tfvars    # confira antes de aplicar
+terraform apply                            # deve mostrar "1 to change, 0 to destroy"
+```
+
+Leva 1-2 minutos e não recria nada — só atualiza a configuração de acesso do endpoint.
+
+```bash
+kubectl get nodes
+```
+
+**Se você alterna entre redes conhecidas**, liste todas em vez de trocar toda vez:
+
+```hcl
+cluster_endpoint_public_access_cidrs = [
+  "200.102.105.118/32",   # casa
+  "203.0.113.42/32",      # escritório
+]
+```
+
+**Se o valor no tfvars já estiver correto** e mesmo assim der timeout, confirme o que a AWS realmente aplicou — pode divergir se o último `apply` não completou:
+
+```bash
+aws eks describe-cluster --name togglemaster-lab-cluster --region us-east-1 \
+  --query 'cluster.resourcesVpcConfig.[endpointPublicAccess,publicAccessCidrs]'
+
+aws eks describe-cluster --name togglemaster-lab-cluster --region us-east-1 \
+  --query 'cluster.status' --output text     # precisa estar ACTIVE
+```
+
+Esses comandos falam com a API da AWS, não com o endpoint do Kubernetes — funcionam mesmo com o `kubectl` bloqueado.
 
 ---
 
@@ -252,15 +314,70 @@ cluster_endpoint_public_access_cidrs = ["SEU.IP.PUBLICO/32"]
 
 ### 3.1 Construir
 
+Um comando, do zero:
+
 ```bash
 cd $INFRA
-docker compose up          # em primeiro plano, com logs
-docker compose up -d       # em segundo plano
+./local-bootstrap.sh
 ```
 
-Sobe 9 containers: 5 microsserviços, 3 PostgreSQL, 1 Redis e o LocalStack (SQS + DynamoDB).
+Ele faz tudo:
 
-### 3.2 Portas
+1. Cria o `.env` a partir do `.env.example`, se não existir
+2. Gera `MASTER_KEY` e `POSTGRES_PASSWORD` aleatórias
+3. Sobe os 10 containers (5 microsserviços, 3 PostgreSQL, Redis, LocalStack)
+4. Espera o auth-service responder
+5. Cria a `SERVICE_API_KEY` via `POST /admin/keys` e grava no `.env`
+6. Recria o `evaluation-service` para carregá-la
+
+**É idempotente.** Rodar de novo preserva as credenciais já geradas e apenas renova a `SERVICE_API_KEY`. Use `--reset-keys` se quiser regenerar tudo.
+
+| Opção | Efeito |
+|---|---|
+| `--skip-up` | não sobe os containers (assume que já estão no ar) |
+| `--reset-keys` | regenera também `MASTER_KEY` e `POSTGRES_PASSWORD` |
+| `--help` | mostra o resumo |
+
+**Por que a `SERVICE_API_KEY` precisa desse passo.** O auth-service guarda apenas o **hash SHA-256** da chave (`auth-service/key.go`). Hash é via única: não dá para inventar uma chave e esperar que valide — ela precisa ser criada por `POST /admin/keys` para que exista a linha correspondente na tabela `api_keys`. Como o `init.sql` só cria a tabela, sem inserir nada, um banco novo nasce sem chave alguma. Foi por isso que a chave antiga, fixa no `docker-compose.yml`, quebrava a cada `down -v`.
+
+### 3.2 As credenciais
+
+Nenhuma fica no `docker-compose.yml`. Todas vêm do `.env`, que **não é versionado** — cada pessoa do time tem o seu.
+
+| Variável | Obrigatória | Para quê |
+|---|---|---|
+| `POSTGRES_USER` | não (padrão `postgres`) | usuário dos 3 bancos locais |
+| `POSTGRES_PASSWORD` | **sim** | senha dos 3 bancos locais |
+| `MASTER_KEY` | **sim** | protege `POST /admin/keys`, que cria credenciais |
+| `SERVICE_API_KEY` | preenchida pelo script | usada pelo evaluation-service para chamar flag e targeting |
+
+O compose usa `${VAR:?mensagem}` nas obrigatórias, então falha com erro claro se faltar alguma, em vez de subir o serviço com valor vazio e quebrar só na primeira requisição.
+
+Confirme que o git está ignorando o arquivo:
+
+```bash
+git check-ignore -v .env      # deve responder ".gitignore:2:.env"
+git status --short            # o .env NÃO pode aparecer
+```
+
+Se o `.env` aparecer no `git status`, algo está errado no `.gitignore` — não commite.
+
+**Comandos do Compose exigem o `.env`.** O Compose interpola o arquivo antes de executar qualquer subcomando — então `docker compose down`, `ps` ou `logs` também falham se o `.env` não existir. A mensagem aponta a solução:
+
+```
+required variable POSTGRES_PASSWORD is missing a value: rode ./local-bootstrap.sh
+```
+
+**Subir sem o script**, se preferir controlar cada passo:
+
+```bash
+cp .env.example .env
+# edite MASTER_KEY e POSTGRES_PASSWORD
+docker compose up -d
+./local-bootstrap.sh --skip-up   # só a parte da SERVICE_API_KEY
+```
+
+### 3.3 Portas
 
 | Serviço | Porta |
 |---|---|
@@ -275,7 +392,7 @@ Sobe 9 containers: 5 microsserviços, 3 PostgreSQL, 1 Redis e o LocalStack (SQS 
 | redis | 6379 |
 | localstack | 4566 |
 
-### 3.3 Testar
+### 3.4 Testar
 
 ```bash
 for p in 8001 8002 8003 8004 8005; do
@@ -298,12 +415,22 @@ aws --endpoint-url=http://localhost:4566 --region us-east-1 \
 
 O fluxo funcional é o mesmo da [seção 5.2](#52-validação-funcional-dos-endpoints), trocando a URL do NLB por `http://localhost:8001` (auth), `:8002` (flags), `:8003` (rules) e `:8004` (evaluate).
 
-### 3.4 Destruir
+### 3.5 Destruir
 
 ```bash
-docker compose down        # remove containers, mantém os volumes
-docker compose down -v     # remove também os volumes (bancos zerados)
+docker compose stop        # para os containers, preservando os dados
+docker compose down        # remove os containers — OS BANCOS SÃO PERDIDOS
 ```
+
+**Atenção:** este compose **não declara volumes nomeados** para o PostgreSQL. Os dados ficam na camada de escrita do próprio container, então `docker compose down` — mesmo sem `-v` — zera os três bancos. O `-v` não muda nada aqui, porque não há volume de dados para remover.
+
+Consequência prática: qualquer `down` invalida a `SERVICE_API_KEY`, porque a tabela `api_keys` some junto. Para voltar:
+
+```bash
+./local-bootstrap.sh       # detecta e regenera
+```
+
+Se quiser preservar os dados entre sessões, use `docker compose stop` / `docker compose start` em vez de `down` / `up`.
 
 ---
 
@@ -380,7 +507,53 @@ Os repositórios ECR são **IMMUTABLE**: subir `:v1` uma segunda vez falha de pr
 
 O script carrega os `init.sql` nos 3 bancos, gera ConfigMap e Secrets a partir dos outputs do Terraform, sobe o auth-service, cria a `SERVICE_API_KEY` via `POST /admin/keys` e então sobe os outros 4 serviços, o Ingress, o HPA e o KEDA.
 
-A `MASTER_KEY` impressa no final é gerada aleatoriamente a cada deploy. Não precisa anotá-la: ela fica no Secret `auth-service-secret` e o `env.sh` a recupera de lá.
+A `MASTER_KEY` é gerada na primeira execução e preservada nas seguintes. Não precisa anotá-la: fica no Secret `auth-service-secret` e o `env.sh` a recupera de lá.
+
+### Deploy parcial
+
+No dia a dia você raramente redeploya tudo — corrige o que mudou e sobe só isso. Os dois scripts aceitam lista de serviços:
+
+```bash
+cd $INFRA/k8s
+
+# um serviço
+./build-and-push.sh v2 flag-service
+./deploy-service.sh flag-service v2
+
+# dois ou três
+./build-and-push.sh v2 flag-service targeting-service
+./deploy-service.sh flag-service targeting-service v2
+
+# tudo
+./build-and-push.sh v2
+./deploy.sh v2
+```
+
+A ordem dos argumentos é livre — nomes de serviço são reconhecidos pela lista conhecida e o argumento restante vira a tag. Com vários serviços, o `deploy-service.sh` reordena por dependência (auth-service primeiro) e imprime um resumo com ✓ e ✗ ao final, mostrando onde parou caso algum falhe.
+
+Ele não toca nos outros serviços, no Ingress nem no ConfigMap compartilhado. Antes de aplicar, confere se a imagem existe no ECR — evita subir um Deployment que ficaria em `ImagePullBackOff`.
+
+Cada serviço pode estar numa tag diferente. Para ver o que está rodando:
+
+```bash
+kubectl get deploy -n togglemaster \
+  -o custom-columns='SERVIÇO:.metadata.name,IMAGEM:.spec.template.spec.containers[0].image'
+```
+
+**Rollback**, se a versão nova tiver problema:
+
+```bash
+kubectl rollout undo deploy/flag-service -n togglemaster
+kubectl rollout history deploy/flag-service -n togglemaster
+```
+
+Casos particulares:
+
+| Situação | Comando |
+|---|---|
+| Recarregar o schema de um banco | `./deploy-service.sh flag-service v2 --with-schema` |
+| Rotacionar a `SERVICE_API_KEY` | `./bootstrap-apikey.sh --force` |
+| Ver as opções do script | `./deploy-service.sh --help` |
 
 ---
 
@@ -772,6 +945,7 @@ O alarme do AWS Budgets é criado automaticamente pelo módulo `infra` com alert
 - **IAM mínimo no nó** — a role dos nós tem apenas `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, ECR **read-only** e a permissão de pull-through **escopada aos prefixos de cache**. Nenhuma permissão de SQS, DynamoDB ou ELB.
 - **IRSA por workload** — evaluation-service (`sqs:SendMessage`), analytics-service (`sqs:Receive/Delete` + `dynamodb:PutItem`), ALB controller e KEDA (`sqs:GetQueueAttributes`), cada um com sua própria role. **Nenhuma** `AWS_ACCESS_KEY_ID` em manifesto.
 - **Senhas gerenciadas pelo RDS** — `manage_master_user_password = true`: a senha é gerada pelo RDS e guardada no Secrets Manager. Nunca passa por código, tfvars ou state.
+- **Nenhuma credencial versionada** — no ambiente local elas vêm de um `.env` fora do git; na AWS, a `MASTER_KEY` é gerada no deploy e a `SERVICE_API_KEY` é criada em runtime via `/admin/keys`. Em ambos os casos o repositório não contém segredo algum.
 - **Criptografia em repouso** — RDS, ElastiCache, ECR e os Secrets do etcd, todos com CMK própria (envelope encryption).
 - **TLS em trânsito** — conexões com o RDS usam `sslmode=require`.
 - **IMDSv2 obrigatório** nos nós, com hop limit 1: dificulta exfiltração de credenciais via SSRF.
@@ -839,7 +1013,11 @@ tipo/escopo-descricao-nome
 | Sintoma | Causa |
 |---|---|
 | `no such file or directory` no `docker compose up` | repositórios não estão na mesma pasta pai (ver 2.1) |
-| conflito de porta | outro processo usando as portas da tabela 3.2 |
+| conflito de porta | outro processo usando as portas da tabela 3.3 |
+| `required variable ... is missing a value` | falta criar o `.env` — rode `./local-bootstrap.sh` |
+| `401` ao avaliar uma flag localmente | `SERVICE_API_KEY` inválida — rode `./local-bootstrap.sh` |
+| `Acesso não autorizado` no `local-bootstrap.sh` | a `MASTER_KEY` do `.env` difere da do container: `docker compose up -d --force-recreate auth-service` |
+| `Não foi possível conectar ao banco de dados` | corrida de inicialização — resolvida pelos healthchecks; se voltar a ocorrer, veja `docker compose ps` e confirme que os Postgres estão `(healthy)` |
 
 ### Terraform
 
@@ -849,6 +1027,7 @@ tipo/escopo-descricao-nome
 | `AccessDenied` em `aws_budgets_budget` | falta liberar o acesso do IAM ao billing (ver 2.5) |
 | `not eligible for Free Tier` no node group | tipo de instância fora da lista do free plan (ver 2.6) |
 | erro de CIDR inválido | octeto acima de 255 em `cluster_endpoint_public_access_cidrs` |
+| `kubectl` com `i/o timeout` | seu IP público mudou e saiu da allowlist — ver [2.7](#27-quando-o-seu-ip-mudar) |
 | blocos `set` marcados em vermelho no VS Code | falta rodar `terraform init` na pasta — o language server valida contra o schema mais recente |
 | `context deadline exceeded` em `helm_release` | pods não ficaram prontos; investigue com `kubectl get pods -n <ns>` |
 | erro de TLS no webhook do ALB controller após upgrade | certificado dessincronizado: `kubectl rollout restart deploy/aws-load-balancer-controller -n kube-system` |

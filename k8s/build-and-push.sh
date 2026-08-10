@@ -1,29 +1,44 @@
 #!/usr/bin/env bash
 #
-# Build e push das 5 imagens para o ECR.
+# Build e push das imagens da aplicação para o ECR.
 #
 # Uso:
-#   ./build-and-push.sh [TAG]      # default: v1
+#   ./build-and-push.sh [TAG] [SERVIÇO...]
 #
-# Lembre-se: os repositórios ECR são IMMUTABLE. Subir a mesma tag duas vezes
-# falha de propósito. Ao iterar, use v2, v3... ou o short SHA do commit:
+# Exemplos:
+#   ./build-and-push.sh v1                       # os 5 serviços
+#   ./build-and-push.sh v2 flag-service          # só um
+#   ./build-and-push.sh v2 flag-service auth-service
 #   ./build-and-push.sh $(git rev-parse --short HEAD)
+#
+# Os repositórios são IMMUTABLE: subir a mesma tag duas vezes falha de
+# propósito. Ao iterar, use v2, v3… ou o short SHA do commit.
 #
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 TAG="${1:-v1}"
-INFRA_DIR="$(cd "$(dirname "$0")/../terraform/infra" && pwd)"
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+shift || true
 
-SERVICES=(auth-service flag-service targeting-service evaluation-service analytics-service)
+# Sem serviços na linha de comando, constrói todos.
+if [[ $# -gt 0 ]]; then
+  TARGETS=("$@")
+  for svc in "${TARGETS[@]}"; do
+    tm_is_valid_service "$svc" \
+      || tm_die "serviço inválido: '$svc'. Válidos: ${TM_SERVICES[*]}"
+  done
+else
+  TARGETS=("${TM_SERVICES[@]}")
+fi
 
-log() { echo -e "\n\033[1;34m==> $*\033[0m"; }
+tm_check_deps terraform docker aws
 
-cd "$INFRA_DIR"
-REGISTRY="$(terraform output -raw ecr_registry)"
+REGISTRY="$(terraform -chdir="$TM_INFRA_DIR" output -raw ecr_registry)" \
+  || tm_die "não foi possível ler o ECR. O módulo infra foi aplicado?"
 REGION="$(echo "$REGISTRY" | cut -d. -f4)"
 
-log "Autenticando no ECR ($REGISTRY)"
+tm_log "Autenticando no ECR ($REGISTRY)"
 aws ecr get-login-password --region "$REGION" \
   | docker login --username AWS --password-stdin "$REGISTRY"
 
@@ -31,19 +46,32 @@ aws ecr get-login-password --region "$REGION" \
 # Docker Hub — é o que mantém o build sem dependência de registro público.
 # Rode ./mirror-images.sh antes, senão estas imagens não existem ainda.
 BASE_REGISTRY="$REGISTRY/mirror/library"
-log "Imagens base virão de: $BASE_REGISTRY"
 
-for svc in "${SERVICES[@]}"; do
-  log "$svc:$TAG"
-  # --platform linux/amd64 é explícito para o caso de você buildar de um Mac
-  # com chip Apple Silicon: sem isso a imagem sai arm64 e os nós (amd64) não
-  # conseguem executá-la, com um erro de "exec format error" difícil de ligar
-  # à causa.
+tm_log "Construindo ${#TARGETS[@]} imagem(ns) com tag '$TAG'"
+tm_info "imagens base: $BASE_REGISTRY"
+
+for svc in "${TARGETS[@]}"; do
+  tm_log "$svc:$TAG"
+
+  [[ -d "$TM_REPO_ROOT/$svc" ]] \
+    || tm_die "pasta não encontrada: $TM_REPO_ROOT/$svc (os repositórios estão clonados lado a lado?)"
+
+  # --platform linux/amd64 explícito para o caso de você buildar de um Mac
+  # com Apple Silicon: sem isso a imagem sai arm64, os nós não conseguem
+  # executá-la, e o erro ("exec format error") não sugere a causa.
   docker build --platform linux/amd64 \
     --build-arg "BASE_REGISTRY=$BASE_REGISTRY" \
     -t "$REGISTRY/togglemaster/$svc:$TAG" \
-    "$REPO_ROOT/$svc"
+    "$TM_REPO_ROOT/$svc"
+
   docker push "$REGISTRY/togglemaster/$svc:$TAG"
 done
 
-log "Concluído. Agora rode: ./deploy.sh $TAG"
+tm_log "Concluído"
+if [[ ${#TARGETS[@]} -eq ${#TM_SERVICES[@]} ]]; then
+  echo "  Deploy completo:  ./deploy.sh $TAG"
+else
+  for svc in "${TARGETS[@]}"; do
+    echo "  Deploy isolado:   ./deploy-service.sh $svc $TAG"
+  done
+fi
