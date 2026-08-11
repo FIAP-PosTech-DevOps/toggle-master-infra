@@ -23,6 +23,8 @@ Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 m
 
 ## 1. Arquitetura
 
+> Diagrama completo em [`docs/arquitetura.drawio`](docs/arquitetura.drawio), com três páginas: arquitetura AWS, segurança/IRSA e fluxo de provisionamento. Abra em [app.diagrams.net](https://app.diagrams.net) ou pela extensão Draw.io Integration do VS Code.
+
 | Serviço | Linguagem | Porta | Persistência | Repositório |
 |---|---|---|---|---|
 | auth-service | Go | 8001 | PostgreSQL | [auth-service](https://github.com/FIAP-POS-TECH-CHALLENGE/auth-service) |
@@ -960,6 +962,9 @@ O alarme do AWS Budgets é criado automaticamente pelo módulo `infra` com alert
 ```
 toggle-master-infra/
 ├── docker-compose.yml           ambiente local
+├── local-bootstrap.sh           prepara o ambiente local do zero
+├── docs/
+│   └── arquitetura.drawio     diagramas (arquitetura, segurança, deploy)
 ├── terraform/
 │   ├── infra/                   VPC, EKS, RDS, ElastiCache, DynamoDB, SQS, ECR, IRSA, KMS
 │   └── cluster-addons/          metrics-server, ALB controller, ingress-nginx, KEDA
