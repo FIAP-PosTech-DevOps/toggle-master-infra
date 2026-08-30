@@ -1,0 +1,113 @@
+%% ToggleMaster — Tech Challenge FIAP PosTech DevOps · Fase 2
+%% Correção: removida a sintaxe inválida de nós com ícones @{}.
+%% Os componentes AWS são representados com identificadores textuais válidos.
+graph LR
+    classDef awsFB fill:#F58536,stroke:#fff,stroke-width:1px,color:#fff;
+    classDef k8s fill:#326CE5,stroke:#fff,stroke-width:1px,color:#fff;
+    classDef addon fill:#006064,stroke:#fff,stroke-width:1px,color:#fff;
+    classDef db fill:#2E7D32,stroke:#fff,stroke-width:1px,color:#fff;
+    classDef cache fill:#B71C1C,stroke:#fff,stroke-width:1px,color:#fff;
+    classDef queue fill:#6A1B9A,stroke:#fff,stroke-width:1px,color:#fff;
+    classDef dynamo fill:#AD1457,stroke:#fff,stroke-width:1px,color:#fff;
+    classDef registry fill:#5D4037,stroke:#fff,stroke-width:1px,color:#fff;
+    classDef gov fill:#827717,stroke:#fff,stroke-width:1px,color:#fff;
+    classDef script fill:#ECEFF1,stroke:#78909C,stroke-width:2px,stroke-dasharray:5 3,color:#263238;
+
+    Internet((Clientes<br/>da API))
+
+    subgraph AWS["AWS Cloud · Região us-east-1"]
+
+        subgraph REG["Serviços regionais · fora da VPC"]
+            SQS["Amazon SQS (Standard)<br/>visibility timeout 60 s"]:::queue
+            DLQ["Dead Letter Queue<br/>maxReceiveCount 5 · 14 dias"]:::queue
+            DDB["Amazon DynamoDB<br/>ToggleMasterAnalytics<br/>PAY_PER_REQUEST · PK event_id"]:::dynamo
+            CW["CloudWatch Logs<br/>control plane do EKS<br/>api · audit · authenticator"]:::gov
+            BUD["AWS Budgets<br/>teto US$ 80/mês<br/>50% · 80% · previsão 100%"]:::gov
+
+            subgraph ECRG["Amazon ECR"]
+                ECRAPP["togglemaster/* · 5 repositórios<br/>tag IMMUTABLE · scan on push"]:::registry
+                ECRPT["pull-through cache<br/>k8s/* e ecr-public/*<br/>ingress-nginx · metrics-server · alb-controller"]:::registry
+                ECRMIR["mirror/*<br/>KEDA e imagens base<br/>criado por mirror-images.sh"]:::script
+            end
+        end
+
+        subgraph VPC["VPC 10.0.0.0/16 · module vpc · 2 AZs (us-east-1a / us-east-1b)"]
+            subgraph PUB["Sub-redes públicas · 10.0.0.0/24 · 10.0.1.0/24"]
+                IGW["Internet Gateway"]:::awsFB
+                NLB["Network Load Balancer<br/>internet-facing · target-type: ip<br/>ativo nas 2 AZs"]:::awsFB
+                NAT["NAT Gateway + Elastic IP<br/>single_nat_gateway = true"]:::awsFB
+            end
+
+            subgraph PRIV["Sub-redes privadas · 10.0.10.0/24 · 10.0.11.0/24 · sem IP público"]
+                subgraph EKS["Amazon EKS 1.30 · module eks · endpoint privado + público restringível"]
+                    NODES["Managed Node Group<br/>2x c7i-flex.large · ON_DEMAND<br/>min 1 · desejado 2 · máx 4<br/>IMDSv2 · hop limit 1"]:::awsFB
+
+                    subgraph NSING["namespace: ingress-nginx · helm_release"]
+                        NGINX["ingress-nginx controller<br/>Service type LoadBalancer"]:::addon
+                    end
+
+                    subgraph NSSYS["namespace: kube-system · helm_release"]
+                        ALBC["aws-load-balancer-controller<br/>ServiceAccount com IRSA"]:::addon
+                        MS["metrics-server<br/>pré-requisito do HPA"]:::addon
+                    end
+
+                    subgraph NSKEDA["namespace: keda · helm_release"]
+                        KEDA["keda-operator<br/>identityOwner: keda"]:::addon
+                    end
+
+                    subgraph NSAPP["namespace: togglemaster · criado pelo Terraform · workloads via kubectl"]
+                        AUTH["auth-service :8001<br/>Go · 1 réplica"]:::k8s
+                        FLAG["flag-service :8002<br/>Python · 1 réplica"]:::k8s
+                        TARG["targeting-service :8003<br/>Python · 1 réplica"]:::k8s
+                        EVAL["evaluation-service :8004<br/>Go · hot path<br/>HPA por CPU 70% · 2 a 6"]:::k8s
+                        ANA["analytics-service :8005<br/>Python · worker de fila<br/>KEDA por fila · 0 a 10"]:::k8s
+                    end
+                end
+
+                subgraph DATA["Camada de dados · single-AZ · subnet groups nas 2 AZs"]
+                    RDSA["RDS PostgreSQL 15<br/>auth_db · db.t3.micro"]:::db
+                    RDSF["RDS PostgreSQL 15<br/>flags_db · db.t3.micro"]:::db
+                    RDST["RDS PostgreSQL 15<br/>targeting_db · db.t3.micro"]:::db
+                    REDIS["ElastiCache Redis 7.1<br/>replication group · 1 nó"]:::cache
+                end
+            end
+        end
+    end
+
+    Internet --> IGW
+    IGW --> NLB
+    ALBC ==>|"provisiona o NLB"| NLB
+    NLB --> NGINX
+
+    NGINX -->|"/validate · /admin"| AUTH
+    NGINX -->|"/flags"| FLAG
+    NGINX -->|"/rules"| TARG
+    NGINX -->|"/evaluate"| EVAL
+
+    FLAG -. "GET /validate" .-> AUTH
+    TARG -. "GET /validate" .-> AUTH
+
+    EVAL ==>|"1. cache-aside · TTL 30 s"| REDIS
+    EVAL -. "2. cache miss (paralelo)" .-> FLAG
+    EVAL -. "2. cache miss (paralelo)" .-> TARG
+
+    AUTH ==> RDSA
+    FLAG ==> RDSF
+    TARG ==> RDST
+
+    EVAL ==>|"3. SendMessage · fire and forget"| SQS
+    SQS ==>|"long polling 20 s"| ANA
+    ANA ==>|"PutItem"| DDB
+    SQS -. "após 5 tentativas" .-> DLQ
+
+    MS -. "coleta CPU" .-> EVAL
+    KEDA -. "GetQueueAttributes" .-> SQS
+    KEDA ==>|"escala 0 a 10"| ANA
+
+    ECRAPP -. "pull das 5 imagens" .-> NODES
+    ECRPT -. "pull dos add-ons" .-> NODES
+    ECRMIR -. "pull do KEDA" .-> NODES
+    NODES -. "egresso" .-> NAT
+    NAT --> IGW
+    EKS -. "logs do control plane" .-> CW
+    
