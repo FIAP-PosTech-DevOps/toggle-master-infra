@@ -1,0 +1,267 @@
+# -----------------------------------------------------------------------------
+# Pipeline do Terraform
+# -----------------------------------------------------------------------------
+# Estratégia de branches (a mesma dos microsserviços): release branch + tags,
+# com a criação da release e as promoções feitas por botão (workflow manual).
+#
+#   feature/*, fix/*  --PR-->  release/vX.Y.Z  --push-->  apply em develop
+#   tag vX.Y.Z-rc.N   (no último commit da release)  -->  apply em staging
+#   tag vX.Y.Z        (no mesmo commit do rc aprovado) -->  apply em production
+#   release/vX.Y.Z    --PR-->  main  (depois de production; só plan)
+#
+# A main só recebe o que já foi para produção. Cancelar um pacote = abandonar
+# a release, sem desfazer nada na main.
+#
+# Branches só disparam quando algo em terraform/ (ou este arquivo) muda: um
+# commit de documentação não gera plan nem apply. Tags sempre disparam (o
+# GitHub não avalia filtro de paths em push de tag).
+#
+#   Pull request -> validação estática + plan do ambiente de destino
+#   Push/tag     -> validação + plan + apply no ambiente correspondente
+#   Manual       -> plan, apply ou destroy de qualquer ambiente
+#
+# Pré-requisitos (uma vez, ver terraform/README.md):
+#   - stacks bootstrap e global aplicados localmente
+#   - variável de repositório AWS_ACCOUNT_ID
+#   - GitHub Environments develop, staging e production (production com
+#     "Required reviewers" para exigir aprovação antes do apply)
+# -----------------------------------------------------------------------------
+name: terraform
+
+on:
+  pull_request:
+    branches: ["release/**", main]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: ["release/**"]
+    tags: ["v*"]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Ambiente"
+        type: choice
+        options: [develop, staging, production]
+        required: true
+      action:
+        description: "O que fazer"
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+        required: true
+
+permissions:
+  contents: read
+  id-token: write  # OIDC: troca o token do GitHub por credenciais temporárias da AWS
+
+env:
+  TF_VERSION: "~1.13"
+  AWS_REGION: us-east-1  # região do bucket de state; cada ambiente usa a sua via tfvars
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Qual ambiente este evento afeta?
+  # ---------------------------------------------------------------------------
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      action: ${{ steps.env.outputs.action }}
+    steps:
+      - id: env
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENVIRONMENT="${{ inputs.environment }}"
+            ACTION="${{ inputs.action }}"
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # Em PR vale a branch de DESTINO, e só roda plan.
+            ACTION=plan
+            case "${{ github.base_ref }}" in
+              release/*) ENVIRONMENT=develop ;;
+              main)      ENVIRONMENT=production ;;  # confere que prod não tem drift
+              *) echo "PR para branch sem ambiente: ${{ github.base_ref }}"; exit 1 ;;
+            esac
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            ACTION=apply
+            TAG="${{ github.ref_name }}"
+            if   [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then ENVIRONMENT=staging
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]];               then ENVIRONMENT=production
+            else echo "tag fora do padrão vX.Y.Z ou vX.Y.Z-rc.N: $TAG"; exit 1
+            fi
+          else
+            # push em release/*
+            ACTION=apply
+            ENVIRONMENT=develop
+          fi
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+          echo "### Ambiente: \`$ENVIRONMENT\` · ação: \`$ACTION\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Validação estática: não precisa de credencial AWS
+  # ---------------------------------------------------------------------------
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff terraform
+
+      - name: terraform validate (todos os stacks)
+        shell: bash
+        run: |
+          for stack in bootstrap global infra cluster-addons; do
+            echo "::group::$stack"
+            terraform -chdir="terraform/$stack" init -backend=false -input=false >/dev/null
+            terraform -chdir="terraform/$stack" validate
+            echo "::endgroup::"
+          done
+
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: tflint
+        run: tflint --recursive --chdir=terraform --minimum-failure-severity=error
+
+      # SAST de IaC. Os achados aceitos conscientemente estão listados, com
+      # motivo, em terraform/.checkov.yaml; qualquer outro reprova o PR.
+      - name: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform
+          framework: terraform
+          config_file: terraform/.checkov.yaml
+          quiet: true
+
+  # ---------------------------------------------------------------------------
+  # Plan (role somente leitura)
+  # ---------------------------------------------------------------------------
+  plan:
+    needs: [resolve, static]
+    if: needs.resolve.outputs.action != 'destroy'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: terraform-${{ needs.resolve.outputs.environment }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/togglemaster-gha-terraform-plan
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: plan infra
+        shell: bash
+        run: |
+          set -o pipefail
+          ./terraform/tf.sh infra "$ENVIRONMENT" plan -no-color -lock-timeout=5m | tee infra-plan.txt
+          {
+            echo "<details><summary>plan infra ($ENVIRONMENT)</summary>"
+            echo; echo '```'; tail -c 60000 infra-plan.txt; echo '```'; echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # O cluster-addons lê o cluster (data source) já no plan. Se o cluster
+      # ainda não existe, o plan dele só faz sentido depois do apply do infra.
+      - name: plan cluster-addons
+        shell: bash
+        run: |
+          set -o pipefail
+          REGION="$(grep -E '^aws_region' "terraform/infra/envs/$ENVIRONMENT.tfvars" | cut -d'"' -f2)"
+          if ! aws eks describe-cluster --region "$REGION" --name "togglemaster-$ENVIRONMENT-cluster" >/dev/null 2>&1; then
+            echo "cluster ainda não existe — plan do cluster-addons fica para depois do apply do infra" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          ./terraform/tf.sh cluster-addons "$ENVIRONMENT" plan -no-color -lock-timeout=5m | tee addons-plan.txt
+          {
+            echo "<details><summary>plan cluster-addons ($ENVIRONMENT)</summary>"
+            echo; echo '```'; tail -c 60000 addons-plan.txt; echo '```'; echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Apply (role admin, só dentro de um GitHub Environment)
+  # ---------------------------------------------------------------------------
+  apply:
+    needs: [resolve, plan]
+    if: needs.resolve.outputs.action == 'apply'
+    runs-on: ubuntu-latest
+    # O environment é o que libera a role de apply (trust policy) e é onde o
+    # GitHub aplica a regra de aprovação manual de production.
+    environment: ${{ needs.resolve.outputs.environment }}
+    concurrency:
+      group: terraform-${{ needs.resolve.outputs.environment }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/togglemaster-gha-terraform-apply
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 7200
+
+      - name: apply infra
+        run: ./terraform/tf.sh infra "$ENVIRONMENT" apply -auto-approve -no-color -lock-timeout=5m
+
+      - name: apply cluster-addons
+        run: ./terraform/tf.sh cluster-addons "$ENVIRONMENT" apply -auto-approve -no-color -lock-timeout=5m
+
+  # ---------------------------------------------------------------------------
+  # Destroy (manual) — desliga o ambiente ao fim da sessão para não pagar
+  # ---------------------------------------------------------------------------
+  destroy:
+    needs: [resolve, static]
+    if: needs.resolve.outputs.action == 'destroy'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.environment }}
+    concurrency:
+      group: terraform-${{ needs.resolve.outputs.environment }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/togglemaster-gha-terraform-apply
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 7200
+
+      # Ordem inversa da criação: primeiro o que roda dentro do cluster (o
+      # NLB do ingress e os volumes EBS precisam sair antes da VPC).
+      - name: destroy cluster-addons
+        run: ./terraform/tf.sh cluster-addons "$ENVIRONMENT" destroy -auto-approve -no-color -lock-timeout=5m
+
+      - name: destroy infra
+        run: ./terraform/tf.sh infra "$ENVIRONMENT" destroy -auto-approve -no-color -lock-timeout=5m
