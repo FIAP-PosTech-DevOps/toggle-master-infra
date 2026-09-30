@@ -4,30 +4,25 @@ locals {
 
   account_id = data.aws_caller_identity.current.account_id
 
-  # A VPC vem do próprio cluster, não de uma variável — menos coisa para
-  # copiar e colar errado.
+  # A VPC vem do próprio cluster, não de uma variável.
   vpc_id = data.aws_eks_cluster.this.vpc_config[0].vpc_id
 
-  # ARNs das roles IRSA derivados da mesma convenção de nomes usada no
-  # módulo infra (irsa.tf). Se você renomear as roles lá, ajuste aqui.
-  # Host do ECR privado desta conta.
-  ecr_registry = "${local.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
+  # Registry compartilhado (stack global), que pode estar em outra região.
+  ecr_registry = "${local.account_id}.dkr.ecr.${var.ecr_region}.amazonaws.com"
 
-  # Prefixos de pull-through criados no módulo infra. Uma imagem que antes
-  # vinha de registry.k8s.io/metrics-server/metrics-server passa a vir de
-  # <ecr_registry>/k8s/metrics-server/metrics-server, e o ECR busca do
-  # upstream na primeira vez.
+  # Prefixos de pull-through criados no stack global. Uma imagem de
+  # registry.k8s.io/metrics-server/metrics-server passa a vir de
+  # <ecr_registry>/k8s/metrics-server/metrics-server.
   registry_k8s        = "${local.ecr_registry}/k8s"
   registry_ecr_public = "${local.ecr_registry}/ecr-public"
 
-  # Repositórios espelhados manualmente por k8s/mirror-images.sh (upstreams
-  # que exigiriam credencial: ghcr.io e Docker Hub).
-  registry_mirror = "${local.ecr_registry}/mirror"
-
+  # ARNs das roles IRSA pela mesma convenção de nomes do módulo
+  # workload-identity (stack infra). Evita ler o state do outro stack.
   irsa_role_arns = {
     alb_controller = "arn:aws:iam::${local.account_id}:role/${local.name_prefix}-irsa-alb-controller"
-    evaluation     = "arn:aws:iam::${local.account_id}:role/${local.name_prefix}-irsa-evaluation"
-    analytics      = "arn:aws:iam::${local.account_id}:role/${local.name_prefix}-irsa-analytics"
     keda           = "arn:aws:iam::${local.account_id}:role/${local.name_prefix}-irsa-keda"
+    openbao        = "arn:aws:iam::${local.account_id}:role/${local.name_prefix}-irsa-openbao"
   }
+
+  openbao_unseal_kms_alias = "alias/${local.name_prefix}-openbao-unseal"
 }

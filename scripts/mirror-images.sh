@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
 #
-# Espelha para o ECR privado as imagens de terceiros cujo upstream exigiria
-# credencial para pull-through cache (ghcr.io e Docker Hub).
+# Espelha para o ECR compartilhado as imagens de terceiros cujo upstream
+# exigiria credencial para pull-through cache (ghcr.io e Docker Hub).
 #
 # As demais (registry.k8s.io e public.ecr.aws) são resolvidas automaticamente
-# pelas regras de pull-through criadas no Terraform — não precisam deste script.
+# pelas regras de pull-through do stack global — não precisam deste script.
+#
+# Os repositórios mirror/* são criados pelo Terraform (stack global,
+# variável mirror_repositories). Este script só publica as imagens neles.
 #
 # Quando rodar:
-#   - depois do `terraform apply` do infra (os repositórios ECR precisam existir)
-#   - ANTES do `terraform apply` do cluster-addons (o KEDA aponta para o espelho)
-#   - a cada ciclo, porque o `terraform destroy` remove os repositórios
+#   - uma vez, depois do `tf.sh global apply`
+#   - de novo só ao trocar a versão do KEDA ou das imagens base
+#   (o ECR é compartilhado e não é destruído junto com os ambientes)
 #
 # Uso:
-#   ./mirror-images.sh [VERSAO_KEDA]      # default: 2.20.1
+#   ./scripts/mirror-images.sh [VERSAO_KEDA]      # default: 2.20.1
 #
 set -euo pipefail
 
 KEDA_VERSION="${1:-2.20.1}"
-INFRA_DIR="$(cd "$(dirname "$0")/../terraform/infra" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log() { echo -e "\n\033[1;34m==> $*\033[0m"; }
 die() { echo -e "\n\033[1;31mERRO: $*\033[0m" >&2; exit 1; }
 
 command -v docker >/dev/null || die "docker não encontrado"
 
-cd "$INFRA_DIR"
-REGISTRY="$(terraform output -raw ecr_registry)"
+REGISTRY="$("$ROOT/terraform/tf.sh" global output -raw ecr_registry)" \
+  || die "não foi possível ler o output do stack global. Ele foi aplicado?"
 REGION="$(echo "$REGISTRY" | cut -d. -f4)"
 
 # Pares "origem|destino_sem_registry".
@@ -58,15 +61,8 @@ for pair in "${IMAGES[@]}"; do
   repo="${dst_path%%:*}"
   dst="$REGISTRY/$dst_path"
 
-  # Cria o repositório se ainda não existir. MUTABLE de propósito: espelho é
-  # cópia de upstream, e reespelhar a mesma tag num novo ciclo é o normal.
-  # (Os repositórios das SUAS imagens continuam IMMUTABLE — ver ecr.tf.)
   aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1 \
-    || aws ecr create-repository \
-         --repository-name "$repo" \
-         --region "$REGION" \
-         --image-scanning-configuration scanOnPush=true \
-         --image-tag-mutability MUTABLE >/dev/null
+    || die "repositório $repo não existe. Inclua-o em mirror_repositories (terraform/global) e aplique."
 
   echo "  $src"
   echo "    -> $dst"
@@ -86,5 +82,5 @@ Agora todas as imagens de terceiros vêm do seu ECR privado:
   docker.io         -> $REGISTRY/mirror/library/... (espelhado por este script)
 
 Próximo passo:
-  cd ../terraform/cluster-addons && terraform apply
+  ./terraform/tf.sh cluster-addons <ambiente> apply
 EOF

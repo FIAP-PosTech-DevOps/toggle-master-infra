@@ -4,7 +4,7 @@
 #   - a versão mais recente disponível
 #   - a restrição kubeVersion declarada pelo chart
 #
-# Use a saída para preencher as variáveis *_chart_version no terraform.tfvars.
+# Use a saída para ajustar as variáveis *_chart_version (variables.tf ou envs/*.tfvars).
 #
 # Uso:
 #   ./check-chart-versions.sh [VERSAO_K8S]     # default: 1.36
@@ -21,6 +21,9 @@ helm repo add ingress-nginx  https://kubernetes.github.io/ingress-nginx      >/d
 helm repo add eks            https://aws.github.io/eks-charts                >/dev/null 2>&1 || true
 helm repo add kedacore       https://kedacore.github.io/charts               >/dev/null 2>&1 || true
 helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ >/dev/null 2>&1 || true
+helm repo add argo             https://argoproj.github.io/argo-helm           >/dev/null 2>&1 || true
+helm repo add openbao          https://openbao.github.io/openbao-helm         >/dev/null 2>&1 || true
+helm repo add external-secrets https://charts.external-secrets.io             >/dev/null 2>&1 || true
 helm repo update >/dev/null
 
 printf "\nSeu cluster: Kubernetes %s\n\n" "$K8S"
@@ -50,6 +53,10 @@ check "metrics-server/metrics-server"
 check "eks/aws-load-balancer-controller"
 check "ingress-nginx/ingress-nginx"
 check "kedacore/keda"
+check "argo/argo-cd"
+check "argo/argocd-apps"
+check "openbao/openbao"
+check "external-secrets/external-secrets"
 
 cat <<EOF
 
@@ -61,10 +68,16 @@ Como ler:
     suporta o seu cluster. Aí procure uma versão mais nova do chart:
         helm search repo <chart> --versions | head -20
 
-Depois de escolher, coloque no terraform.tfvars:
+Depois de escolher, troque o default em variables.tf (vale para os 3
+ambientes) ou sobrescreva em envs/<ambiente>.tfvars (para testar o upgrade
+em develop primeiro):
 
-  metrics_server_chart_version = "X.Y.Z"
-  alb_controller_chart_version = "X.Y.Z"
-  ingress_nginx_chart_version  = "X.Y.Z"
-  keda_chart_version           = "X.Y.Z"
+  metrics_server_chart_version   = "X.Y.Z"
+  alb_controller_chart_version   = "X.Y.Z"
+  ingress_nginx_chart_version    = "X.Y.Z"
+  keda_chart_version             = "X.Y.Z"
+  argocd_chart_version           = "X.Y.Z"
+  argocd_apps_chart_version      = "X.Y.Z"
+  openbao_chart_version          = "X.Y.Z"
+  external_secrets_chart_version = "X.Y.Z"
 EOF

@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.10.0"
 
   required_providers {
     aws = {
@@ -16,11 +16,7 @@ terraform {
     }
   }
 
-  # backend "s3" {
-  #   bucket         = "togglemaster-tfstate-<seu-account-id>"
-  #   key            = "cluster-addons/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   dynamodb_table = "togglemaster-tfstate-lock"
-  #   encrypt        = true
-  # }
+  # Backend parcial: key cluster-addons/<ambiente>/terraform.tfstate em
+  # envs/<ambiente>.s3.tfbackend; o bucket é injetado pelo tf.sh.
+  backend "s3" {}
 }
