@@ -1,152 +1,170 @@
-# Terraform — referência dos módulos
+# Terraform — ToggleMaster (Fase 3)
 
-> O passo a passo de execução está no [README principal](../README.md), seções 2 (pré-requisitos), 4 (construir) e 7 (destruir). Este documento cobre apenas o que cada módulo faz, suas variáveis e as decisões técnicas.
+Toda a infraestrutura AWS do ToggleMaster em código, com um state remoto por ambiente e três ambientes (develop, staging e production), cada um em uma região.
 
 ```
 terraform/
-├── infra/            1º apply — recursos AWS
-└── cluster-addons/   2º apply — o que roda dentro do cluster
+├── tf.sh                 wrapper: escolhe backend, tfvars e ambiente
+├── .checkov.yaml         achados de segurança aceitos, com motivo
+├── bootstrap/            bucket S3 do state (state local, 1x por conta)
+├── global/               recursos da conta: ECR, OIDC do GitHub, orçamento
+├── modules/              módulos próprios, reutilizados pelos 3 ambientes
+│   ├── network/          VPC, sub-redes públicas/privadas, IGW, NAT, rotas
+│   ├── eks/              cluster, node group, access entries, driver EBS
+│   ├── data/             3x RDS PostgreSQL, ElastiCache Redis, DynamoDB
+│   ├── messaging/        fila SQS + DLQ
+│   └── workload-identity/ roles IRSA (ALB, evaluation, analytics, KEDA, OpenBao)
+├── infra/                1 ambiente = composição dos módulos
+│   └── envs/             develop | staging | production (.tfvars + .s3.tfbackend)
+└── cluster-addons/       o que roda dentro do cluster (Helm)
+    └── envs/             develop | staging | production
 ```
 
-Os providers `kubernetes` e `helm` precisam de um cluster existente no momento do `plan`. Por isso são dois states, aplicados nesta ordem — e destruídos na ordem inversa.
+## Ordem de execução
 
----
+| # | Comando | Frequência | O que cria |
+|---|---|---|---|
+| 1 | `./tf.sh bootstrap apply` | 1x por conta | bucket `togglemaster-tfstate-<account_id>` |
+| 2 | `./tf.sh global apply` | 1x por conta | ECR (5 serviços + espelhos), pull-through cache, OIDC do GitHub + 3 roles, orçamento |
+| 3 | `../scripts/mirror-images.sh` | 1x por conta | imagens do KEDA e imagens base no ECR |
+| 4 | `./tf.sh infra <ambiente> apply` | por ambiente | VPC, EKS, RDS, Redis, DynamoDB, SQS, IRSA |
+| 5 | `./tf.sh cluster-addons <ambiente> apply` | por ambiente | metrics-server, ALB controller, ingress-nginx, KEDA, ArgoCD, OpenBao, External Secrets |
+| 6 | `../scripts/openbao-bootstrap.sh <ambiente>` | por ambiente | inicializa o OpenBao e grava os segredos da aplicação |
 
-## Módulo `infra`
+Os passos 4 a 6 podem rodar para os três ambientes em paralelo (terminais separados, ou a pipeline): cada um tem seu state, sua região e seus nomes.
 
-### O que cria
+Para destruir um ambiente, na ordem inversa:
 
-| Arquivo | Recursos |
-|---|---|
-| `vpc.tf` | VPC, 2 sub-redes públicas, 2 privadas, IGW, NAT Gateway, route tables |
-| `eks.tf` | cluster EKS, managed node group, provedor OIDC |
-| `rds.tf` | 3 instâncias PostgreSQL (auth, flags, targeting) + subnet group |
-| `elasticache.tf` | replication group Redis de 1 nó |
-| `dynamodb.tf` | tabela `ToggleMasterAnalytics`, chave `event_id` |
-| `sqs.tf` | fila principal + dead-letter queue |
-| `ecr.tf` | 5 repositórios privados, IMMUTABLE, com lifecycle policy |
-| `ecr-pullthrough.tf` | regras de cache para `registry.k8s.io` e `public.ecr.aws` |
-| `irsa.tf` | 4 roles IRSA (evaluation, analytics, ALB controller, KEDA) |
-| `security_groups.tf` | SGs de RDS e Redis, liberados só para o SG dos nós |
-| `kms.tf` | CMK para EKS secrets, ECR e RDS |
-| `budgets.tf` | alarme de orçamento com alertas em 50%, 80% e previsão de 100% |
+```bash
+./tf.sh cluster-addons develop destroy
+./tf.sh infra develop destroy
+```
 
-### Variáveis que importam
+O `global` e o `bootstrap` ficam: o ECR com as imagens e o bucket com o histórico dos states são compartilhados pelos ambientes e custam centavos.
 
-| Variável | Default | Observação |
+### Antes do primeiro `infra apply`
+
+Coloque o seu usuário IAM em `cluster_admin_principal_arns` no `infra/envs/<ambiente>.tfvars`. O plan falha com uma mensagem explicativa enquanto isso não for feito: sem esse ARN, só as roles do GitHub Actions teriam `kubectl` no cluster.
+
+```bash
+aws sts get-caller-identity --query Arn --output text
+```
+
+## Ambientes
+
+| Ambiente | Região | VPC | Recebe deploy de |
+|---|---|---|---|
+| develop | us-east-2 (Ohio) | 10.10.0.0/16 | push em `release/vX.Y.Z` |
+| staging | us-west-2 (Oregon) | 10.20.0.0/16 | tag `vX.Y.Z-rc.N` |
+| production | us-east-1 (N. Virginia) | 10.30.0.0/16 | tag `vX.Y.Z` (aprovação + janela do ArgoCD) |
+
+O código é o mesmo para os três. O que muda fica em `envs/<ambiente>.tfvars`: região, AZs, CIDRs, tamanho e as proteções de produção (comentadas em `production.tfvars` por causa do custo).
+
+Cada ambiente ligado custa cerca de **US$0,40/hora** (EKS, 2 nós, NAT, 3 RDS, Redis e NLB). O orçamento do stack `global` vale para a conta inteira, somando os três.
+
+## State remoto, lock e versionamento
+
+**Backend S3 com lock nativo.** Todos os stacks, exceto o `bootstrap`, usam `backend "s3"` com `use_lockfile = true`. Durante um `plan`/`apply` o Terraform grava `<key>.tflock` no próprio bucket; uma segunda execução no mesmo ambiente espera ou falha, em vez de corromper o state. A tabela DynamoDB de lock ficou obsoleta no Terraform 1.11, então não é usada.
+
+**Um state por ambiente e por stack.** As keys são `global/`, `infra/<ambiente>/` e `cluster-addons/<ambiente>/`. Um `apply` em develop não consegue tocar o state de production.
+
+**Versionamento em vez de cópia de backup.** Em vez de copiar o `tfstate` para um arquivo de backup a cada execução, o bucket tem versionamento ligado: cada `apply` gera uma nova versão do objeto. Um state corrompido ou apagado volta pela versão anterior:
+
+```bash
+BUCKET=togglemaster-tfstate-$(aws sts get-caller-identity --query Account --output text)
+aws s3api list-object-versions --bucket "$BUCKET" --prefix infra/develop/terraform.tfstate \
+  --query 'Versions[].{id:VersionId,data:LastModified}' --output table
+aws s3api get-object --bucket "$BUCKET" --key infra/develop/terraform.tfstate \
+  --version-id <id> terraform.tfstate.restaurado
+```
+
+As versões antigas ficam 90 dias (as 30 mais recentes nunca expiram). O bucket tem `prevent_destroy`, criptografia KMS, bloqueio de acesso público e recusa conexões sem TLS.
+
+**Por que o bootstrap tem state local.** É o ovo e a galinha: o bucket não existe quando o stack que o cria roda pela primeira vez. Como o stack só contém o bucket, recriar esse state é trivial (`terraform import aws_s3_bucket.tfstate <nome>`).
+
+## O `tf.sh`
+
+```bash
+./tf.sh infra develop plan
+./tf.sh infra develop apply
+./tf.sh infra develop output -raw cluster_name
+./tf.sh cluster-addons staging plan
+```
+
+O script:
+
+1. descobre o bucket pelo account ID, então nenhum arquivo versionado contém o número da conta;
+2. usa `envs/<ambiente>.s3.tfbackend` e `envs/<ambiente>.tfvars` do stack;
+3. isola o `.terraform` por ambiente (`TF_DATA_DIR`), para que trocar de ambiente nunca reaproveite o backend do anterior.
+
+## GitHub Actions sem chave de acesso
+
+O stack `global` cria o provedor OIDC do GitHub e três roles:
+
+| Role | Quem assume | Permissão |
 |---|---|---|
-| `alert_email` | — | **obrigatória**, sem default |
-| `cluster_version` | `1.30` | **troque**. Versão em extended support custa 6x mais |
-| `cluster_endpoint_public_access_cidrs` | `["0.0.0.0/0"]` | restrinja ao seu IP `/32` |
-| `node_instance_types` | `["c7i-flex.large"]` | limitado pelo free plan da conta |
-| `node_capacity_type` | `ON_DEMAND` | `SPOT` economiza ~60%, com risco de interrupção |
-| `single_nat_gateway` | `true` | `false` = 1 por AZ, ~US$32/mês a mais |
-| `databases` | 3 entradas | mapa `sufixo → nome do banco` |
+| `togglemaster-gha-ecr-push` | repositórios dos 5 serviços, só em `release/*` e tags `v*` | push nos repositórios `togglemaster/*` do ECR |
+| `togglemaster-gha-terraform-plan` | `toggle-master-infra`, qualquer branch ou PR | `ReadOnlyAccess` + lock no bucket de state |
+| `togglemaster-gha-terraform-apply` | `toggle-master-infra`, só jobs com `environment:` | `AdministratorAccess` |
 
-Demais variáveis em `infra/variables.tf`, todas documentadas.
+Nenhum `AWS_ACCESS_KEY_ID` fica no GitHub. Para ligar a pipeline (`.github/workflows/terraform.yml`):
 
-### Outputs
+1. Em **Settings → Secrets and variables → Actions → Variables**, crie `AWS_ACCOUNT_ID`.
+2. Em **Settings → Environments**, crie `develop`, `staging` e `production`. Em `production`, marque **Required reviewers**: o apply só roda depois de uma aprovação.
 
-Consumidos pelos scripts em `../k8s`:
+A estratégia de branches é **release branch + tags**, com a criação da release e as promoções feitas por botão:
 
-```bash
-terraform output ecr_registry                  # host para docker login
-terraform output rds_endpoints                 # mapa serviço → host:porta
-terraform output rds_master_user_secret_arns   # ARNs no Secrets Manager
-terraform output redis_endpoint
-terraform output sqs_queue_url
-terraform output dynamodb_table_name
-terraform output irsa_role_arns
+```
+feature/*, fix/*  --PR-->  release/vX.Y.Z  --push-->  develop
+                           tag vX.Y.Z-rc.N  -------->  staging
+                           tag vX.Y.Z       -------->  production (mesmo commit do rc aprovado)
+                           release/vX.Y.Z  --PR-->  main (depois de production)
 ```
 
-As senhas do RDS **não** aparecem em output. `manage_master_user_password = true` faz o próprio RDS gerar e guardar no Secrets Manager:
+A `main` só recebe o que já está em produção. Cancelar um pacote é abandonar a release, sem desfazer nada na `main`.
 
-```bash
-aws secretsmanager get-secret-value \
-  --secret-id $(terraform output -json rds_master_user_secret_arns | jq -r .auth) \
-  --query SecretString --output text | jq -r .password
-```
-
-### Decisões
-
-**Módulos oficiais para VPC e EKS.** `terraform-aws-modules/vpc` e `/eks` em vez de recursos soltos: a malha de sub-redes, route tables e a configuração do OIDC têm muitos detalhes fáceis de errar.
-
-**`default_tags` no provider.** Todo recurso recebe `Project`, `Environment` e `ManagedBy` automaticamente, inclusive os criados dentro dos módulos. Nenhum recurso repete `tags`. É o que permite a varredura por tag na verificação de destroy.
-
-**Módulo oficial de IRSA.** `iam-role-for-service-accounts-eks` monta a trust policy do OIDC corretamente — o `sub` precisa casar exatamente com `namespace:serviceaccount`, e errar isso gera um `AccessDenied` difícil de rastrear.
-
-**Pull-through cache com IAM escopado.** Os nós ganham `ecr:CreateRepository` e `ecr:BatchImportUpstreamImage`, mas restritas aos prefixos `k8s/*` e `ecr-public/*`.
-
----
-
-## Módulo `cluster-addons`
-
-### O que instala
-
-| Arquivo | Componente |
+| Evento | O que roda |
 |---|---|
-| `metrics-server.tf` | metrics-server — pré-requisito do HPA |
-| `alb-controller.tf` | aws-load-balancer-controller, com IRSA |
-| `ingress-nginx.tf` | ingress-nginx exposto por NLB |
-| `keda.tf` | KEDA, com IRSA na SA do operador |
-| `namespace.tf` | namespace `togglemaster` + Service Accounts anotadas |
+| PR para `release/*` | fmt, validate, tflint, checkov e plan de **develop** |
+| PR para `main` | o mesmo, com plan de **production** (confere que não há drift) |
+| push em `release/*` (com mudança em `terraform/`) | validação + apply em **develop** |
+| tag `vX.Y.Z-rc.N` | validação + apply em **staging** |
+| tag `vX.Y.Z` | validação + apply em **production**, depois da aprovação do Environment |
+| manual (`workflow_dispatch`) | plan, apply ou destroy de qualquer ambiente |
 
-### Não precisa de tfvars
+Atenção ao custo: um push numa release (ou uma tag) **cria o ambiente** se ele estiver desligado. Destrua pelo `workflow_dispatch` (ação `destroy`) ao fim da sessão.
 
-O módulo descobre tudo sozinho: o cluster pelo nome derivado de `project_name` + `environment`, a VPC pelo data source do cluster, e os ARNs das roles IRSA pela convenção de nomes do `infra`.
+## Addons do cluster
 
-A exceção são as versões dos charts. Descubra as compatíveis com:
+| Arquivo | Componente | Por quê |
+|---|---|---|
+| `metrics-server.tf` | metrics-server | pré-requisito do HPA |
+| `alb-controller.tf` | AWS Load Balancer Controller (IRSA) | cria o NLB do ingress |
+| `ingress-nginx.tf` | ingress-nginx | roteamento HTTP para os serviços |
+| `keda.tf` | KEDA (IRSA) | escala o analytics-service pela fila |
+| `storage-class.tf` | StorageClass `gp3` padrão | volumes EBS (usado pelo OpenBao) |
+| `argocd.tf` | ArgoCD + Application raiz | GitOps: sincroniza `clusters/<ambiente>` do repositório `toggle-master-gitops` |
+| `openbao.tf` | OpenBao (auto-unseal com KMS via IRSA) | cofre dos segredos da aplicação |
+| `external-secrets.tf` | External Secrets Operator | entrega os segredos do OpenBao aos pods |
 
-```bash
-./check-chart-versions.sh 1.36
-```
+Ferramentas de terceiros entram por Helm; as aplicações próprias ficam no repositório GitOps, com Kustomize.
 
-O script mostra a última versão de cada chart e a restrição `kubeVersion` declarada. Se algum default estiver defasado, sobrescreva no `terraform.tfvars`:
+**Segredos sem arquivo de texto.** DATABASE_URL, MASTER_KEY e SERVICE_API_KEY ficam no OpenBao. O repositório GitOps só declara `ExternalSecret`, uma referência ao caminho do segredo, nunca o valor. O `scripts/openbao-bootstrap.sh` inicializa o cofre e guarda o root token e a recovery key no AWS Secrets Manager.
 
-```hcl
-metrics_server_chart_version = "3.13.1"
-alb_controller_chart_version = "3.4.3"
-ingress_nginx_chart_version  = "4.15.1"
-keda_chart_version           = "2.20.1"
-```
-
-### Armadilhas conhecidas
-
-**Webhook do ALB controller intercepta todo Service do cluster.** Enquanto seus pods não estão `Ready`, qualquer Service novo falha com `no endpoints available for service aws-load-balancer-webhook-service`. Por isso `metrics-server`, `ingress-nginx` e `keda` têm `depends_on` apontando para ele, e o release do controller usa `wait = true`.
-
-**Upgrade do ALB controller quebra o TLS do webhook.** O chart gera um certificado auto-assinado na instalação; num `helm upgrade` ele regenera o par, mas os pods continuam servindo o certificado antigo. O sintoma é `x509: certificate signed by unknown authority`. Correção:
+Confira se as versões dos charts continuam compatíveis com o seu Kubernetes:
 
 ```bash
-kubectl rollout restart deploy/aws-load-balancer-controller -n kube-system
+cd cluster-addons && ./check-chart-versions.sh 1.36
 ```
 
-Só acontece em upgrade, nunca em instalação limpa.
+## Decisões
 
-**Cada chart estrutura o endereço da imagem de um jeito.**
+**Módulos próprios em volta dos oficiais.** `modules/network` e `modules/eks` encapsulam `terraform-aws-modules/vpc` e `/eks`: a malha de rotas, o OIDC e os security groups têm detalhes demais para escrever à mão, mas a interface fica nossa, com as escolhas do projeto (tags de descoberta, IMDSv2, access entries).
 
-| Chart | Estrutura |
-|---|---|
-| metrics-server | `image.repository` = endereço completo |
-| ALB controller | `image.repository` = endereço completo |
-| ingress-nginx | `image.registry` (host) + `image.image` (caminho) |
-| KEDA | `global.image.registry` + `image.<componente>.repository` |
+**Acesso ao cluster declarado, não herdado.** `enable_cluster_creator_admin_permissions = false`, com access entries explícitos para as roles da CI e para os ARNs de `cluster_admin_principal_arns`. Com pessoas e CI aplicando o mesmo state, o "criador" mudaria a cada execução e o módulo recriaria o acesso toda vez.
 
-O Helm **não valida** chaves: um `--set` inexistente é ignorado em silêncio. Sempre renderize antes de aplicar:
+**Um ECR para os três ambientes.** A CI faz o build uma vez e publica `v1.0.0-<sha>`. Promover para staging ou production é só trocar a tag no GitOps: a imagem que roda em production é, byte a byte, a que foi testada em staging.
 
-```bash
-helm template keda kedacore/keda --version 2.20.1 \
-  --set global.image.registry=<seu-ecr> \
-  --set image.keda.repository=mirror/kedacore/keda | grep "image:"
-```
+**Nomes com o ambiente.** Nomes de IAM são globais na conta. Todo recurso usa o prefixo `togglemaster-<ambiente>`, o que permite ter os três ambientes ligados ao mesmo tempo.
 
-**KEDA usa a SA do operador, não a do workload.** Com `identityOwner: keda`, quem chama o SQS é o pod do `keda-operator` no namespace `keda`. A role IRSA confia em `keda:keda-operator`, e o chart anota essa SA via `podIdentity.aws.irsa.roleArn`. Uma Service Account no namespace da aplicação não teria efeito nenhum.
-
-**`kubernetes_manifest` não serve para CRDs recém-criados.** O `TriggerAuthentication` e o `ScaledObject` do KEDA ficam como manifestos `kubectl` em `../k8s`, porque o `kubernetes_manifest` exige o schema do CRD registrado já no `plan` — e ele só nasce quando o `helm_release` roda.
-
----
-
-## Estado remoto
-
-Por padrão o state é local, o que serve para um laboratório individual. Para compartilhar com o grupo, veja `infra/backend.tf.example` (bucket S3 + tabela de lock) e descomente o bloco `backend "s3"` no `versions.tf` de cada módulo.
-
-O `.gitignore` bloqueia state e tfvars. O `.terraform.lock.hcl`, ao contrário, **deve** ser commitado — ele fixa os hashes das versões de provider para todo mundo.
+**Achados de segurança aceitos, com motivo.** `.checkov.yaml` lista o que foi aceito por custo (Multi-AZ, Performance Insights) ou risco registrado (Redis sem TLS). Qualquer achado fora da lista reprova o PR.
