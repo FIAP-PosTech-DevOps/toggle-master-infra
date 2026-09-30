@@ -1,0 +1,11 @@
+# Copie para terraform.tfvars e ajuste. terraform.tfvars está no .gitignore.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+
+# OBRIGATÓRIO — recebe os alertas de orçamento da conta.
+alert_email = "devops.infra.cloud@gmail.com"
+
+# Todo o resto tem default. Descomente só se quiser mudar:
+# github_org       = "FIAP-PosTech-DevOps"
+# budget_limit_usd = "100"
+# ci_push_refs     = ["refs/heads/release/*", "refs/tags/v*"]

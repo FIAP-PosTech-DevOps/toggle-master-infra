@@ -1,0 +1,28 @@
+# Achados de IaC aceitos conscientemente neste projeto. Cada item tem o
+# motivo; o que não está aqui (ou num #checkov:skip dentro do recurso) é
+# tratado como problema de verdade.
+#
+#   checkov -d terraform --config-file terraform/.checkov.yaml
+skip-check:
+  # Módulos da registry fixados por versão (~>), não por hash de commit.
+  - CKV_TF_1
+  # Bucket de state: replicação cross-region, access logging e notificações
+  # de evento são custo sem ganho para um laboratório de uma conta só.
+  - CKV_AWS_144
+  - CKV_AWS_18
+  - CKV2_AWS_62
+  # RDS: Multi-AZ, deletion protection, Performance Insights, Enhanced
+  # Monitoring e query logging dobram ou somam custo. Multi-AZ e deletion
+  # protection são variáveis por ambiente (ver infra/envs/production.tfvars).
+  - CKV_AWS_157
+  - CKV_AWS_293
+  - CKV_AWS_353
+  - CKV_AWS_118
+  - CKV2_AWS_30
+  # DynamoDB PITR: variável por ambiente (dynamodb_point_in_time_recovery).
+  - CKV_AWS_28
+  # Redis sem TLS/AUTH e sem failover: o evaluation-service conecta com
+  # redis:// simples. Risco registrado desde a Fase 2.
+  - CKV_AWS_30
+  - CKV_AWS_31
+  - CKV2_AWS_50
