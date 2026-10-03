@@ -40,12 +40,11 @@ IMAGES=(
   "ghcr.io/kedacore/keda-metrics-apiserver:${KEDA_VERSION}|mirror/kedacore/keda-metrics-apiserver:${KEDA_VERSION}"
   "ghcr.io/kedacore/keda-admission-webhooks:${KEDA_VERSION}|mirror/kedacore/keda-admission-webhooks:${KEDA_VERSION}"
 
-  # --- Imagens base dos Dockerfiles (Docker Hub) ---
-  "golang:1.21-alpine|mirror/library/golang:1.21-alpine"
-  "alpine:3.19|mirror/library/alpine:3.19"
-  "python:3.9-slim|mirror/library/python:3.9-slim"
+  # --- Imagens base dos Dockerfiles (Docker Hub), para build fora da CI ---
+  "golang:1.27-alpine|mirror/library/golang:1.27-alpine"
+  "python:3.13-slim|mirror/library/python:3.13-slim"
 
-  # --- Utilitários usados pelo deploy.sh e pelos testes ---
+  # --- psql do Job de migração (repositório GitOps) e utilitários de teste ---
   "postgres:15-alpine|mirror/library/postgres:15-alpine"
   "redis:7-alpine|mirror/library/redis:7-alpine"
 )

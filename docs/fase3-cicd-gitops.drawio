@@ -7,7 +7,7 @@
         <mxCell id="title" value="ToggleMaster — Fase 3: CI/CD, DevSecOps e GitOps" style="text;align=left;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#0F172A;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="40" y="16" width="900" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="subtitle" value="Proposta de arquitetura · branch &lt;i&gt;feat/fase3-devsecops-gitops-diogo&lt;/i&gt; · “Se não está no código, não existe”" style="text;align=left;verticalAlign=middle;fontSize=13;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="subtitle" value="Proposta de arquitetura · branch &lt;i&gt;feature/fase3-devsecops-gitops-diogo&lt;/i&gt; · “Se não está no código, não existe”" style="text;align=left;verticalAlign=middle;fontSize=13;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="40" y="52" width="900" height="24" as="geometry" />
         </mxCell>
         <mxCell id="lg_t" value="&lt;b&gt;Legenda&lt;/b&gt;" style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
@@ -70,19 +70,19 @@
         <mxCell id="svc_4" value="&lt;b&gt;analytics-service&lt;/b&gt; · Python" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="svc_g">
           <mxGeometry x="18" y="240" width="224" height="38" as="geometry" />
         </mxCell>
-        <mxCell id="svc_note" value="cada repo tem só um &lt;i&gt;ci.yml&lt;/i&gt; curto&lt;br&gt;que chama o workflow reutilizável" style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=center;" vertex="1" parent="svc_g">
+        <mxCell id="svc_note" value="cada repo tem &lt;i&gt;ci.yml&lt;/i&gt;, &lt;i&gt;release.yml&lt;/i&gt; e &lt;i&gt;promote.yml&lt;/i&gt;&lt;br&gt;curtos, que chamam os reutilizáveis" style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=center;" vertex="1" parent="svc_g">
           <mxGeometry x="10" y="290" width="240" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="ci_g" value="GitHub Actions — CI de cada serviço (independente) · workflow reutilizável ci-go.yml / ci-python.yml" style="rounded=1;arcSize=3;fillColor=#EFF6FF;strokeColor=#1D4ED8;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=4;container=1;collapsible=0;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="ci_g" value="GitHub Actions — CI de cada serviço (independente) · workflow reutilizável service-ci.yml" style="rounded=1;arcSize=3;fillColor=#EFF6FF;strokeColor=#1D4ED8;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=4;container=1;collapsible=0;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="460" y="96" width="900" height="340" as="geometry" />
         </mxCell>
         <mxCell id="st1" value="&lt;b&gt;1. Build &amp;amp; Unit Test&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;go build · go test&lt;br&gt;pytest&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
           <mxGeometry x="18" y="50" width="128" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="st2" value="&lt;b&gt;2. Lint&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;golangci-lint&lt;br&gt;flake8 · pylint&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
+        <mxCell id="st2" value="&lt;b&gt;2. Lint&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;golangci-lint&lt;br&gt;flake8&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
           <mxGeometry x="164" y="50" width="128" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="st3" value="&lt;b&gt;3. SAST + SCA&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;gosec · bandit&lt;br&gt;Trivy fs · SonarCloud&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#FEE2E2;strokeColor=#B91C1C;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
+        <mxCell id="st3" value="&lt;b&gt;3. SAST + SCA&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;SonarQube Cloud&lt;br&gt;Snyk (ou Trivy fs)&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#FEE2E2;strokeColor=#B91C1C;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
           <mxGeometry x="310" y="50" width="128" height="100" as="geometry" />
         </mxCell>
         <mxCell id="st4" value="&lt;b&gt;4. Docker Build&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;+ Trivy image&lt;br&gt;(container scan)&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#FEE2E2;strokeColor=#B91C1C;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
@@ -121,13 +121,13 @@
         <mxCell id="tf_env" value="&lt;b&gt;envs/*.tfvars&lt;/b&gt; · develop · staging · production&lt;br&gt;(uma região por ambiente)" style="rounded=1;arcSize=8;fillColor=#EDE9FE;strokeColor=#7B42BC;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
           <mxGeometry x="16" y="94" width="338" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="tf_wf" value="&lt;b&gt;terraform.yml&lt;/b&gt; (paths: terraform/**)&lt;br&gt;PR: fmt · validate · Trivy config · plan&lt;br&gt;merge: apply" style="rounded=1;arcSize=8;fillColor=#EDE9FE;strokeColor=#7B42BC;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
+        <mxCell id="tf_wf" value="&lt;b&gt;terraform.yml&lt;/b&gt; (paths: terraform/**)&lt;br&gt;PR: fmt · validate · tflint · checkov · plan&lt;br&gt;merge: apply" style="rounded=1;arcSize=8;fillColor=#EDE9FE;strokeColor=#7B42BC;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
           <mxGeometry x="16" y="154" width="338" height="66" as="geometry" />
         </mxCell>
         <mxCell id="tf_argo" value="&lt;b&gt;cluster-addons&lt;/b&gt; · ArgoCD via Helm" style="rounded=1;arcSize=8;fillColor=#EDE9FE;strokeColor=#7B42BC;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
           <mxGeometry x="16" y="230" width="338" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="tf_reuse" value="&lt;b&gt;.github/workflows&lt;/b&gt; · ci-go.yml · ci-python.yml&lt;br&gt;(workflows reutilizáveis)" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
+        <mxCell id="tf_reuse" value="&lt;b&gt;.github/workflows&lt;/b&gt; (reutilizáveis) · service-ci.yml&lt;br&gt;service-promote.yml · git-release.yml" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
           <mxGeometry x="16" y="280" width="338" height="50" as="geometry" />
         </mxCell>
         <mxCell id="aws" value="AWS — conta pessoal" style="sketch=0;outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;verticalAlign=top;align=left;spacingLeft=30;grIcon=mxgraph.aws4.group_aws_cloud_alt;strokeColor=#232F3E;fillColor=none;fontColor=#232F3E;dashed=0;" vertex="1" parent="1">

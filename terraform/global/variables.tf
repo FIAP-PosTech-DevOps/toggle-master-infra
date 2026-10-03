@@ -38,7 +38,6 @@ variable "mirror_repositories" {
     "mirror/kedacore/keda-metrics-apiserver",
     "mirror/kedacore/keda-admission-webhooks",
     "mirror/library/golang",
-    "mirror/library/alpine",
     "mirror/library/python",
     "mirror/library/postgres",
     "mirror/library/redis",

@@ -1,0 +1,193 @@
+# -----------------------------------------------------------------------------
+# Promoção de uma versão para staging ou production (workflow reutilizável)
+# -----------------------------------------------------------------------------
+# Disparado pelo push de uma tag no repositório do serviço — normalmente
+# criada pelos botões "promover-staging" / "promover-producao" (release.yml):
+#
+#   vX.Y.Z-rc.N  ->  staging
+#   vX.Y.Z       ->  production (aprovação no GitHub Environment "production")
+#
+# NÃO há novo build: a imagem promovida é a mesma vX.Y.Z-<sha> publicada
+# quando o commit passou pela release (e por develop). Antes de promover, a
+# imagem é escaneada de novo com o Trivy: uma CVE crítica descoberta depois
+# do build também barra a promoção.
+# -----------------------------------------------------------------------------
+name: service-promote
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        type: string
+        required: true
+      aws-account-id:
+        type: string
+        required: true
+      ecr-region:
+        type: string
+        default: us-east-1
+      gitops-repository:
+        type: string
+        default: FIAP-PosTech-DevOps/toggle-master-gitops
+
+# Nada por padrão; cada job pede só o que usa.
+permissions: {}
+
+env:
+  TRIVY_VERSION: v0.75.0
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Qual ambiente, qual imagem, e se a tag respeita as regras do fluxo
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: Validar tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      environment: ${{ steps.r.outputs.environment }}
+      version: ${{ steps.r.outputs.version }}
+      image-tag: ${{ steps.r.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # precisa de todas as tags e branches
+
+      - id: r
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$REF_TYPE" == "tag" ]] || { echo "::error::este workflow só roda em push de tag"; exit 1; }
+
+          if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-rc\.[0-9]+$ ]]; then
+            ENVIRONMENT=staging
+          elif [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            ENVIRONMENT=production
+          else
+            echo "::error::tag fora do padrão vX.Y.Z-rc.N (staging) ou vX.Y.Z (production): $TAG"
+            exit 1
+          fi
+          VERSION="${BASH_REMATCH[1]}"
+
+          COMMIT="$(git rev-list -n 1 "$TAG")"
+          IMAGE_TAG="v${VERSION}-${COMMIT:0:7}"
+
+          # Regra 1: a tag precisa estar num commit da release/vX.Y.Z — foi lá
+          # que a imagem foi construída e testada em develop.
+          if ! git branch -r --contains "$COMMIT" | grep -qE "^[[:space:]]*origin/release/v${VERSION}$"; then
+            echo "::error::o commit de $TAG não pertence à branch release/v${VERSION}"
+            exit 1
+          fi
+
+          # Regra 2: produção só recebe um commit que já foi rc (validado em staging).
+          if [[ "$ENVIRONMENT" == "production" ]]; then
+            RC="$(git tag --points-at "$COMMIT" | grep -E "^v${VERSION}-rc\.[0-9]+$" | sort -V | tail -1 || true)"
+            [[ -n "$RC" ]] || { echo "::error::$TAG não aponta para um commit que passou por staging (nenhuma tag v${VERSION}-rc.N nele)"; exit 1; }
+            echo "- validado em staging como \`$RC\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          {
+            echo "environment=$ENVIRONMENT"
+            echo "version=$VERSION"
+            echo "image-tag=$IMAGE_TAG"
+          } >> "$GITHUB_OUTPUT"
+          echo "### ${{ inputs.service-name }}: \`$TAG\` → **$ENVIRONMENT** (imagem \`$IMAGE_TAG\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # A imagem existe no ECR e continua sem vulnerabilidade crítica?
+  # (sem `environment:` de propósito: a role da AWS confia em refs/tags/v*)
+  # ---------------------------------------------------------------------------
+  verify-image:
+    name: Re-scan da imagem (Trivy)
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      IMAGE: ${{ inputs.aws-account-id }}.dkr.ecr.${{ inputs.ecr-region }}.amazonaws.com/togglemaster/${{ inputs.service-name }}
+      IMAGE_TAG: ${{ needs.resolve.outputs.image-tag }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/togglemaster-gha-ecr-push
+          aws-region: ${{ inputs.ecr-region }}
+
+      - name: Imagem existe no ECR?
+        shell: bash
+        env:
+          REPOSITORY: togglemaster/${{ inputs.service-name }}
+          REGION: ${{ inputs.ecr-region }}
+        run: |
+          aws ecr describe-images --region "$REGION" --repository-name "$REPOSITORY" \
+              --image-ids imageTag="$IMAGE_TAG" >/dev/null \
+            || { echo "::error::${IMAGE}:${IMAGE_TAG} não existe no ECR. O commit passou pela pipeline da release?"; exit 1; }
+
+      - uses: aws-actions/amazon-ecr-login@v2.1.7
+
+      - name: trivy image (CRÍTICA reprova)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+          scanners: vuln
+          severity: CRITICAL
+          exit-code: "1"
+          format: table
+
+  # ---------------------------------------------------------------------------
+  # Atualiza o overlay do ambiente no GitOps (production espera aprovação)
+  # ---------------------------------------------------------------------------
+  promote:
+    name: GitOps — ${{ needs.resolve.outputs.environment }}
+    needs: [resolve, verify-image]
+    runs-on: ubuntu-latest
+    # O GitHub Environment "production" pode exigir aprovação manual
+    # (Settings > Environments > production > Required reviewers). O job
+    # fica parado aqui até alguém aprovar.
+    environment: ${{ needs.resolve.outputs.environment }}
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: gitops-${{ inputs.service-name }}-${{ needs.resolve.outputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - name: Conferir CI_GITHUB_TOKEN
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.CI_GITHUB_TOKEN }}
+        run: |
+          [[ -n "$TOKEN" ]] || { echo "::error::secret CI_GITHUB_TOKEN não configurado (escrita no repositório GitOps)"; exit 1; }
+
+      - uses: FIAP-PosTech-DevOps/toggle-master-infra/.github/actions/gitops-set-image@main
+        with:
+          service: ${{ inputs.service-name }}
+          environment: ${{ needs.resolve.outputs.environment }}
+          image-tag: ${{ needs.resolve.outputs.image-tag }}
+          repository: ${{ inputs.gitops-repository }}
+          token: ${{ secrets.CI_GITHUB_TOKEN }}
+
+      # Depois de produção, a release volta para a main: a main passa a ser
+      # exatamente o que está rodando em production.
+      - name: Abrir PR release -> main
+        if: needs.resolve.outputs.environment == 'production'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          BRANCH="release/v${VERSION}"
+          OPEN="$(gh pr list -R "$REPO" --head "$BRANCH" --base main --state open --json number --jq 'length')"
+          if [[ "$OPEN" != "0" ]]; then
+            echo "PR de $BRANCH para main já está aberto"
+          else
+            gh pr create -R "$REPO" --head "$BRANCH" --base main \
+              --title "release v${VERSION} -> main" \
+              --body "A versão v${VERSION} foi para produção. Este PR leva a release para a main, que deve refletir o que está em produção."
+          fi

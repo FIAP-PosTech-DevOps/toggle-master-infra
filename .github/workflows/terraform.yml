@@ -110,9 +110,9 @@ jobs:
   static:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
@@ -129,7 +129,7 @@ jobs:
             echo "::endgroup::"
           done
 
-      - uses: terraform-linters/setup-tflint@v4
+      - uses: terraform-linters/setup-tflint@v6.3.2
 
       - name: tflint
         run: tflint --recursive --chdir=terraform --minimum-failure-severity=error
@@ -137,7 +137,7 @@ jobs:
       # SAST de IaC. Os achados aceitos conscientemente estão listados, com
       # motivo, em terraform/.checkov.yaml; qualquer outro reprova o PR.
       - name: checkov
-        uses: bridgecrewio/checkov-action@v12
+        uses: bridgecrewio/checkov-action@v12.3128.0
         with:
           directory: terraform
           framework: terraform
@@ -157,14 +157,14 @@ jobs:
     env:
       ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/togglemaster-gha-terraform-plan
           aws-region: ${{ env.AWS_REGION }}
@@ -212,14 +212,14 @@ jobs:
     env:
       ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/togglemaster-gha-terraform-apply
           aws-region: ${{ env.AWS_REGION }}
@@ -245,14 +245,14 @@ jobs:
     env:
       ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/togglemaster-gha-terraform-apply
           aws-region: ${{ env.AWS_REGION }}

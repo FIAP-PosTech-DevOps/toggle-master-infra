@@ -1,0 +1,469 @@
+# -----------------------------------------------------------------------------
+# Pipeline de CI / DevSecOps dos microsserviços (workflow reutilizável)
+# -----------------------------------------------------------------------------
+# Cada serviço tem um .github/workflows/ci.yml de poucas linhas que chama
+# este arquivo. Melhorias na pipeline são feitas aqui, uma vez, e valem para
+# os 5 serviços.
+#
+#   1. Build & testes       go build/test | pytest
+#   2. Lint                 golangci-lint | flake8
+#   3. SAST                 SonarQube Cloud (Quality Gate)
+#   4. SCA                  Snyk (padrão) ou Trivy fs — variável SCA_TOOL
+#   5. Imagem               docker build -> Trivy (CRÍTICA = reprova) -> ECR
+#   6. Deploy em develop    commit do newTag no repositório GitOps (ArgoCD aplica)
+#
+# Pull request: roda 1 a 5 sem publicar nada. Push em release/vX.Y.Z: roda
+# tudo, publica vX.Y.Z-<sha> no ECR e implanta em develop.
+#
+# Regra de bloqueio: vulnerabilidade CRÍTICA (dependência ou imagem) ou
+# Quality Gate reprovado interrompem a pipeline; nada chega ao ECR.
+# -----------------------------------------------------------------------------
+name: service-ci
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: Nome do serviço (repositório ECR togglemaster/<nome> e pasta no GitOps)
+        type: string
+        required: true
+      language:
+        description: go | python
+        type: string
+        required: true
+      aws-account-id:
+        description: Conta AWS do ECR (variável AWS_ACCOUNT_ID)
+        type: string
+        required: true
+      sonar-organization:
+        description: Organização no SonarQube Cloud (variável SONAR_ORGANIZATION)
+        type: string
+        required: true
+      sca-tool:
+        description: Ferramenta de SCA, snyk ou trivy (variável SCA_TOOL)
+        type: string
+        default: snyk
+      go-version:
+        type: string
+        default: "1.27"
+      python-version:
+        type: string
+        default: "3.13"
+      ecr-region:
+        type: string
+        default: us-east-1
+      gitops-repository:
+        type: string
+        default: FIAP-PosTech-DevOps/toggle-master-gitops
+
+# Nada por padrão; cada job pede só o que usa.
+permissions: {}
+
+env:
+  GOLANGCI_LINT_VERSION: v2.14.0
+  TRIVY_VERSION: v0.75.0
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Versão, tag da imagem e se esta execução publica ou não
+  # ---------------------------------------------------------------------------
+  context:
+    name: Contexto
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      publish: ${{ steps.ctx.outputs.publish }}
+      version: ${{ steps.ctx.outputs.version }}
+      image-tag: ${{ steps.ctx.outputs.image-tag }}
+    steps:
+      - id: ctx
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          LANGUAGE: ${{ inputs.language }}
+          SCA_TOOL: ${{ inputs.sca-tool }}
+        run: |
+          [[ "$LANGUAGE" == "go" || "$LANGUAGE" == "python" ]] \
+            || { echo "::error::language deve ser go ou python (recebido: $LANGUAGE)"; exit 1; }
+          [[ "$SCA_TOOL" == "snyk" || "$SCA_TOOL" == "trivy" ]] \
+            || { echo "::error::SCA_TOOL deve ser snyk ou trivy (recebido: $SCA_TOOL)"; exit 1; }
+
+          # Só um push numa release/vX.Y.Z publica imagem e implanta em develop.
+          if [[ "$EVENT" == "push" && "$REF_NAME" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            PUBLISH=true
+          else
+            VERSION="0.0.0-ci"
+            PUBLISH=false
+          fi
+          IMAGE_TAG="v${VERSION}-${SHA:0:7}"
+
+          {
+            echo "publish=$PUBLISH"
+            echo "version=$VERSION"
+            echo "image-tag=$IMAGE_TAG"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### ${{ inputs.service-name }}"
+            echo "- imagem: \`$IMAGE_TAG\`"
+            echo "- publica no ECR e implanta em develop: **$PUBLISH**"
+            echo "- SCA: **$SCA_TOOL**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 1. Build & testes unitários
+  # ---------------------------------------------------------------------------
+  build-test:
+    name: Build e testes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - if: inputs.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: go build + go test
+        if: inputs.language == 'go'
+        run: |
+          go mod download
+          go vet ./...
+          go build ./...
+          go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - if: inputs.language == 'python'
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: pytest
+        if: inputs.language == 'python'
+        shell: bash
+        run: |
+          pip install -r requirements-dev.txt
+          if [[ -d tests ]]; then
+            pytest --cov=. --cov-report=xml:coverage.xml --cov-report=term
+          else
+            echo "::notice::repositório sem testes unitários"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage.xml
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # ---------------------------------------------------------------------------
+  # 2. Lint / análise estática de estilo
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - if: inputs.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: golangci-lint
+        if: inputs.language == 'go'
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+      - if: inputs.language == 'python'
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: flake8
+        if: inputs.language == 'python'
+        run: |
+          pip install flake8==7.4.1
+          flake8 .
+
+  # ---------------------------------------------------------------------------
+  # 3. SAST — SonarQube Cloud
+  # ---------------------------------------------------------------------------
+  sast:
+    name: SAST (SonarQube Cloud)
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # o Sonar usa o histórico para identificar o "código novo"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: coverage
+        continue-on-error: true # serviço sem testes não gera cobertura
+
+      - name: Conferir SONAR_TOKEN
+        shell: bash
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          [[ -n "$SONAR_TOKEN" ]] || { echo "::error::secret SONAR_TOKEN não configurado (Settings > Secrets > Actions)"; exit 1; }
+
+      # qualitygate.wait=true: a etapa espera o resultado do Quality Gate e
+      # FALHA se ele for reprovado (ex.: vulnerabilidade no código novo).
+      - uses: SonarSource/sonarqube-scan-action@v8.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.organization=${{ inputs.sonar-organization }}
+            -Dsonar.projectKey=${{ github.repository_owner }}_${{ github.event.repository.name }}
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
+
+  # ---------------------------------------------------------------------------
+  # 4. SCA — dependências vulneráveis (Snyk ou Trivy fs)
+  # ---------------------------------------------------------------------------
+  sca:
+    name: SCA (${{ inputs.sca-tool }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # envia o resultado para a aba Security do GitHub
+    steps:
+      - uses: actions/checkout@v7
+
+      # --- Snyk: precisa do toolchain e das dependências instaladas para
+      #     montar a árvore de dependências.
+      - if: inputs.sca-tool == 'snyk' && inputs.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - if: inputs.sca-tool == 'snyk' && inputs.language == 'python'
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - if: inputs.sca-tool == 'snyk' && inputs.language == 'python'
+        run: pip install -r requirements.txt
+
+      - if: inputs.sca-tool == 'snyk'
+        uses: snyk/actions/setup@v1.0.0
+
+      - name: snyk test (CRÍTICA reprova)
+        if: inputs.sca-tool == 'snyk'
+        shell: bash
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          LANGUAGE: ${{ inputs.language }}
+        run: |
+          [[ -n "$SNYK_TOKEN" ]] || { echo "::error::secret SNYK_TOKEN não configurado. Configure-o ou use SCA_TOOL=trivy."; exit 1; }
+          ARGS=(--severity-threshold=critical --sarif-file-output=sca.sarif)
+          [[ "$LANGUAGE" == "python" ]] && ARGS+=(--file=requirements.txt --package-manager=pip)
+          snyk test "${ARGS[@]}"
+
+      # --- Trivy fs (plano B): lê go.sum / requirements.txt, sem conta externa.
+      - name: trivy fs (CRÍTICA reprova)
+        id: trivy-fs
+        if: inputs.sca-tool == 'trivy'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL
+          exit-code: "1"
+          format: table
+
+      - name: trivy fs (relatório SARIF)
+        if: always() && steps.trivy-fs.outcome != 'skipped'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: sarif
+          output: sca.sarif
+          skip-setup-trivy: true
+
+      - name: Enviar resultado para a aba Security
+        if: always() && hashFiles('sca.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4.38.2
+        continue-on-error: true
+        with:
+          sarif_file: sca.sarif
+          category: sca-${{ inputs.sca-tool }}
+
+  # ---------------------------------------------------------------------------
+  # 5. Imagem: build -> Trivy (quarentena) -> push no ECR
+  # ---------------------------------------------------------------------------
+  image:
+    name: Imagem (Trivy + ECR)
+    needs: [context, build-test, lint, sast, sca]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC com a AWS (role togglemaster-gha-ecr-push)
+      security-events: write
+    env:
+      IMAGE: ${{ inputs.aws-account-id }}.dkr.ecr.${{ inputs.ecr-region }}.amazonaws.com/togglemaster/${{ inputs.service-name }}
+      IMAGE_TAG: ${{ needs.context.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: docker build
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.version=${IMAGE_TAG}" \
+            -t "${IMAGE}:${IMAGE_TAG}" .
+
+      # Quarentena: a imagem só segue para o ECR se não tiver vulnerabilidade
+      # CRÍTICA nem segredo embutido.
+      - name: trivy image (CRÍTICA reprova)
+        id: trivy-image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+          scanners: vuln,secret
+          severity: CRITICAL
+          exit-code: "1"
+          format: table
+
+      - name: trivy image (relatório SARIF)
+        if: always() && steps.trivy-image.outcome != 'skipped'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: sarif
+          output: trivy-image.sarif
+          skip-setup-trivy: true
+
+      - name: Enviar resultado para a aba Security
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4.38.2
+        continue-on-error: true
+        with:
+          sarif_file: trivy-image.sarif
+          category: container-image
+
+      - name: Credenciais AWS (OIDC)
+        if: needs.context.outputs.publish == 'true'
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/togglemaster-gha-ecr-push
+          aws-region: ${{ inputs.ecr-region }}
+
+      - name: Login no ECR
+        if: needs.context.outputs.publish == 'true'
+        uses: aws-actions/amazon-ecr-login@v2.1.7
+
+      - name: docker push
+        if: needs.context.outputs.publish == 'true'
+        shell: bash
+        env:
+          REPOSITORY: togglemaster/${{ inputs.service-name }}
+          REGION: ${{ inputs.ecr-region }}
+        run: |
+          # Repositório IMMUTABLE: re-executar a pipeline do mesmo commit não
+          # pode sobrescrever a tag, então pula o push se ela já existe.
+          if aws ecr describe-images --region "$REGION" --repository-name "$REPOSITORY" \
+               --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "::notice::${IMAGE}:${IMAGE_TAG} já existe no ECR — push ignorado"
+          else
+            docker push "${IMAGE}:${IMAGE_TAG}"
+          fi
+          echo "- publicada: \`${IMAGE}:${IMAGE_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Snyk monitor: guarda as dependências da versão publicada e avisa por
+  # e-mail se aparecer uma CVE nova depois. Não bloqueia.
+  # ---------------------------------------------------------------------------
+  sca-monitor:
+    name: Snyk monitor
+    needs: [context, image]
+    if: needs.context.outputs.publish == 'true' && inputs.sca-tool == 'snyk'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - if: inputs.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - if: inputs.language == 'python'
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - if: inputs.language == 'python'
+        run: pip install -r requirements.txt
+
+      - uses: snyk/actions/setup@v1.0.0
+
+      - name: snyk monitor
+        shell: bash
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          LANGUAGE: ${{ inputs.language }}
+          VERSION: ${{ needs.context.outputs.version }}
+        run: |
+          ARGS=(--project-name="${{ inputs.service-name }}" --target-reference="v${VERSION}")
+          [[ "$LANGUAGE" == "python" ]] && ARGS+=(--file=requirements.txt --package-manager=pip)
+          snyk monitor "${ARGS[@]}"
+
+  # ---------------------------------------------------------------------------
+  # 6. Deploy em develop (GitOps)
+  # ---------------------------------------------------------------------------
+  deploy-develop:
+    name: GitOps — develop
+    needs: [context, image]
+    if: needs.context.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    concurrency:
+      group: gitops-${{ inputs.service-name }}-develop
+      cancel-in-progress: false
+    steps:
+      - name: Conferir CI_GITHUB_TOKEN
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.CI_GITHUB_TOKEN }}
+        run: |
+          [[ -n "$TOKEN" ]] || { echo "::error::secret CI_GITHUB_TOKEN não configurado (escrita no repositório GitOps)"; exit 1; }
+
+      - uses: FIAP-PosTech-DevOps/toggle-master-infra/.github/actions/gitops-set-image@main
+        with:
+          service: ${{ inputs.service-name }}
+          environment: develop
+          image-tag: ${{ needs.context.outputs.image-tag }}
+          repository: ${{ inputs.gitops-repository }}
+          token: ${{ secrets.CI_GITHUB_TOKEN }}

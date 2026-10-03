@@ -1,0 +1,38 @@
+# Botões de release do repositório de infraestrutura (aba Actions > release >
+# Run workflow). A lógica fica em git-release.yml, a mesma dos serviços.
+#
+# Aqui as tags disparam o terraform.yml:
+#   push em release/*  -> apply em develop
+#   tag vX.Y.Z-rc.N    -> apply em staging
+#   tag vX.Y.Z         -> apply em production (com aprovação)
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      acao:
+        description: O que fazer
+        type: choice
+        options: [criar-release, promover-staging, promover-producao]
+        required: true
+      tipo-de-versao:
+        description: "Só para criar-release: patch (correção), minor (funcionalidade), major (quebra de contrato)"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      release:
+        description: "Branch da release (ex.: release/v1.2.0). Vazio = a mais recente"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: ./.github/workflows/git-release.yml
+    with:
+      action: ${{ inputs.acao }}
+      bump: ${{ inputs.tipo-de-versao }}
+      release: ${{ inputs.release }}
+    secrets: inherit
