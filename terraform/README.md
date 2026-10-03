@@ -30,8 +30,11 @@ terraform/
 | 4 | `./tf.sh infra <ambiente> apply` | por ambiente | VPC, EKS, RDS, Redis, DynamoDB, SQS, IRSA |
 | 5 | `./tf.sh cluster-addons <ambiente> apply` | por ambiente | metrics-server, ALB controller, ingress-nginx, KEDA, ArgoCD, OpenBao, External Secrets |
 | 6 | `../scripts/openbao-bootstrap.sh <ambiente>` | por ambiente | inicializa o OpenBao e grava os segredos da aplicação |
+| 7 | `../scripts/argocd-repo-credentials.sh <ambiente>` | por ambiente, **só se o repo GitOps for privado** | credencial de leitura do `toggle-master-gitops` no ArgoCD |
 
-Os passos 4 a 6 podem rodar para os três ambientes em paralelo (terminais separados, ou a pipeline): cada um tem seu state, sua região e seus nomes.
+Depois do passo 5, o ArgoCD passa a sincronizar sozinho o repositório [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops) (pasta `clusters/<ambiente>`). Antes do primeiro ambiente, rode lá o `scripts/set-aws-account.sh` para trocar o account ID dos manifestos.
+
+Os passos 4 a 7 podem rodar para os três ambientes em paralelo (terminais separados, ou a pipeline): cada um tem seu state, sua região e seus nomes.
 
 Para destruir um ambiente, na ordem inversa:
 

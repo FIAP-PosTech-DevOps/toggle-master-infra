@@ -68,9 +68,7 @@ resource "helm_release" "keda" {
   timeout = 900
 }
 
-# O TriggerAuthentication e o ScaledObject do analytics-service ficam como
-# manifestos kubectl comuns (k8s/09-keda-analytics.yaml), e não como
-# kubernetes_manifest do Terraform: o kubernetes_manifest precisa do schema
-# do CRD já registrado no cluster durante o `plan`, o que não existe na
-# primeira apply — o CRD só nasce quando este helm_release roda. Aplicar via
-# kubectl depois deste módulo evita esse problema clássico de ovo-e-galinha.
+# O TriggerAuthentication e o ScaledObject do analytics-service ficam no
+# repositório GitOps (apps/analytics-service/base/keda.yaml), aplicados pelo
+# ArgoCD. Não usamos kubernetes_manifest aqui porque ele exige o CRD já
+# registrado no `plan`, e o CRD só nasce quando este helm_release roda.

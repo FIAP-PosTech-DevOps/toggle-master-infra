@@ -15,7 +15,11 @@
 #        secret/togglemaster/auth-service        DATABASE_URL, MASTER_KEY
 #        secret/togglemaster/flag-service        DATABASE_URL
 #        secret/togglemaster/targeting-service   DATABASE_URL
-#        secret/togglemaster/evaluation-service  SERVICE_API_KEY
+#        secret/togglemaster/evaluation-service  SERVICE_API_KEY, REDIS_URL
+#
+# REDIS_URL não é segredo, mas o endpoint do ElastiCache muda a cada vez que
+# o ambiente é recriado; guardá-lo aqui evita editar o repositório GitOps a
+# cada apply.
 #
 # A DATABASE_URL é montada com a senha que o próprio RDS gerou e guardou no
 # Secrets Manager. Se a AWS rotacionar essa senha (padrão: a cada 7 dias),
@@ -236,8 +240,10 @@ info "flag-service       DATABASE_URL"
 kv_put targeting-service "$(jq -n --arg db "$(db_url targeting)" '{DATABASE_URL: $db}')"
 info "targeting-service  DATABASE_URL"
 
-kv_put evaluation-service "$(jq -n --arg k "$SERVICE_API_KEY" '{SERVICE_API_KEY: $k}')"
-info "evaluation-service SERVICE_API_KEY"
+REDIS_URL="redis://$(jq -r .redis_endpoint.value <<<"$OUTPUTS"):6379"
+kv_put evaluation-service "$(jq -n --arg k "$SERVICE_API_KEY" --arg r "$REDIS_URL" \
+  '{SERVICE_API_KEY: $k, REDIS_URL: $r}')"
+info "evaluation-service SERVICE_API_KEY, REDIS_URL"
 
 unset MASTER_KEY SERVICE_API_KEY BAO_TOKEN_VALUE
 
