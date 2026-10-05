@@ -1,66 +1,109 @@
-# Este módulo NÃO pede vpc_id nem os ARNs das roles IRSA: ele descobre tudo
-# a partir do cluster e da convenção de nomes do módulo infra. Se você não
-# mudou project_name/environment lá, não precisa de nenhum tfvars aqui —
-# exceto, possivelmente, as versões dos charts (veja abaixo).
+# Este stack NÃO pede vpc_id nem ARNs de role: descobre tudo a partir do
+# cluster e da convenção de nomes do stack infra. Os valores de cada ambiente
+# ficam em envs/<ambiente>.tfvars.
+
+variable "environment" {
+  description = "Mesmo valor usado no stack infra."
+  type        = string
+
+  validation {
+    condition     = contains(["develop", "staging", "production"], var.environment)
+    error_message = "environment deve ser develop, staging ou production."
+  }
+}
 
 variable "aws_region" {
-  description = "Precisa ser a mesma região do módulo infra."
+  description = "Região do ambiente (mesma do stack infra)."
+  type        = string
+}
+
+variable "ecr_region" {
+  description = "Região do registry compartilhado (stack global)."
   type        = string
   default     = "us-east-1"
 }
 
 variable "project_name" {
-  description = "Mesmo valor usado no módulo infra."
-  type        = string
-  default     = "togglemaster"
+  type    = string
+  default = "togglemaster"
 }
 
-variable "environment" {
-  description = "Mesmo valor usado no módulo infra."
+# --- GitOps ------------------------------------------------------------------
+
+variable "gitops_repo_url" {
+  description = "Repositório com os manifestos que o ArgoCD sincroniza."
   type        = string
-  default     = "lab"
+  default     = "https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops.git"
 }
 
-variable "app_namespace" {
-  description = "Mesmo valor usado no módulo infra (entra na trust policy do IRSA)."
+variable "gitops_target_revision" {
+  description = "Branch do repositório GitOps. Um branch só; o ambiente é escolhido pela pasta (clusters/<ambiente>)."
   type        = string
-  default     = "togglemaster"
+  default     = "main"
+}
+
+variable "argocd_reconciliation_timeout" {
+  description = "De quanto em quanto tempo o ArgoCD consulta o repositório GitOps. O padrão do chart é 120s; 60s deixa a demo mais rápida sem precisar de webhook."
+  type        = string
+  default     = "60s"
+}
+
+# --- OpenBao -----------------------------------------------------------------
+
+variable "openbao_storage_size" {
+  description = "Tamanho do volume EBS com os dados do OpenBao."
+  type        = string
+  default     = "2Gi"
 }
 
 # --- Versões dos Helm charts -------------------------------------------------
 #
-# Fixar versão é boa prática: garante que um novo apply amanhã instale
-# exatamente o que você testou hoje, em vez de puxar um "latest" que mudou.
-#
-# Mas os defaults abaixo podem estar defasados em relação ao seu cluster.
-# Descubra as versões corretas rodando:
+# Fixar versão garante que um apply amanhã instale o mesmo que foi testado
+# hoje. Confira se continuam compatíveis com o seu Kubernetes com:
 #
 #     ./check-chart-versions.sh 1.36
-#
-# O script mostra a última versão de cada chart e a restrição kubeVersion que
-# ele declara. Se algum default aqui não suportar o seu Kubernetes, sobrescreva
-# no terraform.tfvars.
 
 variable "metrics_server_chart_version" {
-  description = "Versão do chart metrics-server. Confirme com ./check-chart-versions.sh"
-  type        = string
-  default     = "3.12.2"
+  type    = string
+  default = "3.13.1"
 }
 
 variable "alb_controller_chart_version" {
-  description = "Versão do chart aws-load-balancer-controller. Confirme com ./check-chart-versions.sh"
-  type        = string
-  default     = "1.8.1"
+  type    = string
+  default = "3.4.3"
 }
 
 variable "ingress_nginx_chart_version" {
-  description = "Versão do chart ingress-nginx. Confirme com ./check-chart-versions.sh"
-  type        = string
-  default     = "4.11.2"
+  type    = string
+  default = "4.15.1"
 }
 
 variable "keda_chart_version" {
-  description = "Versão do chart KEDA. Confirme com ./check-chart-versions.sh"
+  description = "A versão do chart também é a tag das imagens espelhadas por k8s/mirror-images.sh."
   type        = string
-  default     = "2.15.1"
+  default     = "2.20.1"
+}
+
+variable "argocd_chart_version" {
+  description = "Chart argo-cd (argoproj/argo-helm)."
+  type        = string
+  default     = "10.9.4"
+}
+
+variable "argocd_apps_chart_version" {
+  description = "Chart argocd-apps, usado para criar a Application raiz (app-of-apps)."
+  type        = string
+  default     = "2.0.6"
+}
+
+variable "openbao_chart_version" {
+  description = "Chart openbao (openbao/openbao-helm)."
+  type        = string
+  default     = "0.30.0"
+}
+
+variable "external_secrets_chart_version" {
+  description = "Chart external-secrets."
+  type        = string
+  default     = "2.11.0"
 }

@@ -1,5 +1,6 @@
 terraform {
-  required_version = ">= 1.6.0"
+  # 1.10+ por causa do use_lockfile (lock nativo do S3).
+  required_version = ">= 1.10.0"
 
   required_providers {
     aws = {
@@ -8,17 +9,9 @@ terraform {
     }
   }
 
-  # Backend remoto (opcional). Por padrão o state fica local, num arquivo
-  # terraform.tfstate nesta pasta — suficiente para um laboratório
-  # individual. Se o grupo do desafio for aplicar a mesma infra, veja
-  # backend.tf.example para criar o bucket S3 + tabela de lock e depois
-  # descomente o bloco abaixo.
-  #
-  # backend "s3" {
-  #   bucket         = "togglemaster-tfstate-<seu-account-id>"
-  #   key            = "infra/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   dynamodb_table = "togglemaster-tfstate-lock"
-  #   encrypt        = true
-  # }
+  # Backend parcial: a key (infra/<ambiente>/terraform.tfstate) e a região
+  # vêm de envs/<ambiente>.s3.tfbackend, e o bucket é injetado pelo tf.sh.
+  # Um state por ambiente: um apply em develop nunca toca o state de
+  # production.
+  backend "s3" {}
 }

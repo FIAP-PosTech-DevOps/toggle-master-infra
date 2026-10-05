@@ -5,6 +5,8 @@ Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 m
 - **Local** — Docker Compose com LocalStack, para desenvolvimento
 - **AWS** — Kubernetes gerenciado (EKS) provisionado por Terraform, para simular produção
 
+> **Fase 3 em andamento.** A infraestrutura foi reorganizada em módulos, com state remoto no S3 e três ambientes (develop, staging e production), cada um em uma região. O passo a passo novo está em [`terraform/README.md`](terraform/README.md). O deploy das aplicações passa a ser feito pelo ArgoCD a partir do repositório [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops), que substitui a pasta `k8s/`. As pipelines de CI/CD e DevSecOps dos serviços estão em [`docs/ci-cd.md`](docs/ci-cd.md). As seções 4 e 7 abaixo ainda descrevem o fluxo manual da Fase 2 (`k8s/*.sh`) e serão atualizadas ao fim da migração para GitOps.
+
 ## Índice
 
 1. [Arquitetura](#1-arquitetura)

@@ -1,0 +1,81 @@
+# -----------------------------------------------------------------------------
+# Atualiza a versão (newTag) de um serviço num ambiente do repositório GitOps
+# -----------------------------------------------------------------------------
+# É o "deploy" do modelo GitOps: a CI não fala com o cluster, só faz um commit
+# alterando uma linha em
+#   apps/<serviço>/overlays/<ambiente>/kustomization.yaml
+# e o ArgoCD do ambiente sincroniza sozinho.
+#
+# Usado pela pipeline de CI (develop) e pela de promoção (staging/production).
+# -----------------------------------------------------------------------------
+name: gitops-set-image
+description: Altera o newTag de um serviço num overlay do repositório GitOps e faz push
+
+inputs:
+  service:
+    description: Nome do serviço (pasta em apps/)
+    required: true
+  environment:
+    description: develop | staging | production
+    required: true
+  image-tag:
+    description: Tag da imagem no ECR (vX.Y.Z-<sha>)
+    required: true
+  repository:
+    description: Repositório GitOps (owner/nome)
+    required: true
+  token:
+    description: Token com permissão de escrita no repositório GitOps
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout do repositório GitOps
+      uses: actions/checkout@v7
+      with:
+        repository: ${{ inputs.repository }}
+        token: ${{ inputs.token }}
+        ref: main
+        path: .gitops
+
+    - name: Atualizar newTag e publicar
+      shell: bash
+      working-directory: .gitops
+      env:
+        SERVICE: ${{ inputs.service }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        SOURCE: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        FILE="apps/${SERVICE}/overlays/${ENVIRONMENT}/kustomization.yaml"
+        [[ -f "$FILE" ]] || { echo "::error::$FILE não existe no repositório GitOps"; exit 1; }
+
+        CURRENT="$(yq '(.images[] | select(.name == strenv(SERVICE))).newTag' "$FILE")"
+        if [[ "$CURRENT" == "$IMAGE_TAG" ]]; then
+          echo "$SERVICE já está em $IMAGE_TAG no ambiente $ENVIRONMENT — nada a fazer"
+          exit 0
+        fi
+
+        # yq preserva comentários e a formatação do restante do arquivo.
+        yq -i '(.images[] | select(.name == strenv(SERVICE))).newTag = strenv(IMAGE_TAG)' "$FILE"
+
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add "$FILE"
+        git commit -m "deploy(${SERVICE}): ${ENVIRONMENT} ${CURRENT} -> ${IMAGE_TAG}" -m "Origem: ${SOURCE}"
+
+        # Os 5 serviços publicam no mesmo repositório: se outro push entrar
+        # antes, refaz o rebase (arquivos diferentes, sem conflito) e tenta de novo.
+        for attempt in 1 2 3 4 5; do
+          if git push origin HEAD:main; then
+            echo "### ${SERVICE} → ${ENVIRONMENT}: \`${CURRENT}\` → \`${IMAGE_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "push recusado (tentativa $attempt), refazendo rebase..."
+          sleep $((attempt * 3))
+          git pull --rebase origin main
+        done
+        echo "::error::não foi possível publicar no repositório GitOps"
+        exit 1
