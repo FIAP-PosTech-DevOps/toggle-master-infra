@@ -1,6 +1,8 @@
-# Kubernetes — manifestos e scripts de deploy
+# Kubernetes — manifestos e scripts de deploy (LEGADO, Fase 2)
 
-> O passo a passo de execução está no [README principal](../README.md), seções 4 (construir), 5 (testes) e 6 (escalabilidade). Este documento cobre o conteúdo dos manifestos e o funcionamento dos scripts.
+> **Esta pasta não é mais usada.** Na Fase 3 o deploy das aplicações passou para o ArgoCD, que lê o repositório [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops) (Kustomize, um namespace por serviço, segredos via OpenBao). O `mirror-images.sh` foi movido para [`scripts/`](../scripts/), e o passo a passo atual está no [README principal](../README.md) e em [`terraform/README.md`](../terraform/README.md).
+>
+> Os scripts abaixo esperam o cluster único da Fase 2 (`togglemaster-lab-cluster`, namespace `togglemaster`) e não funcionam com os ambientes da Fase 3. A pasta fica no repositório só como histórico das decisões e será removida.
 
 ```
 k8s/

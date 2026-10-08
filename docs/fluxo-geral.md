@@ -42,6 +42,9 @@ Os serviços devem subir nesta ordem, porque há dependências em cadeia:
 4. **Subir Redis** e o **`evaluation-service`** (com `SERVICE_API_KEY` válida).
 5. **Subir o `analytics-service`** para consumir a fila SQS.
 
+> **No ambiente local**, o `local-bootstrap.sh` cuida dessa ordem e cria a `SERVICE_API_KEY`.
+> **No EKS**, ninguém sobe serviço à mão: o ArgoCD sincroniza cada serviço de forma independente. A ordem que importa (segredos antes do Job de migração do banco, Job antes do Deployment) é garantida pelas *sync waves* de cada Application, e o Job de migração do `auth-service` já registra o hash da `SERVICE_API_KEY` que o `openbao-bootstrap.sh` gerou. Detalhes no README do [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops).
+
 ---
 
 ## Dois Fluxos Principais

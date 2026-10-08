@@ -1,21 +1,28 @@
 # ToggleMaster — Infraestrutura
 
-Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 microsserviços. Este repositório cobre os dois ambientes:
+Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 microsserviços. Este repositório cobre:
 
-- **Local** — Docker Compose com LocalStack, para desenvolvimento
-- **AWS** — Kubernetes gerenciado (EKS) provisionado por Terraform, para simular produção
+- **Local**: Docker Compose com LocalStack, para desenvolvimento.
+- **AWS**: três ambientes (develop, staging e production), cada um em uma região, com EKS provisionado por Terraform, deploy por GitOps (ArgoCD) e segredos no OpenBao.
+- **CI/CD**: os workflows reutilizáveis que os 5 serviços usam (build, testes, SAST, SCA, scan de imagem, ECR e promoção entre ambientes).
 
-> **Fase 3 em andamento.** A infraestrutura foi reorganizada em módulos, com state remoto no S3 e três ambientes (develop, staging e production), cada um em uma região. O passo a passo novo está em [`terraform/README.md`](terraform/README.md). O deploy das aplicações passa a ser feito pelo ArgoCD a partir do repositório [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops), que substitui a pasta `k8s/`. As pipelines de CI/CD e DevSecOps dos serviços estão em [`docs/ci-cd.md`](docs/ci-cd.md). As seções 4 e 7 abaixo ainda descrevem o fluxo manual da Fase 2 (`k8s/*.sh`) e serão atualizadas ao fim da migração para GitOps.
+| Assunto | Onde está |
+|---|---|
+| Passo a passo do Terraform, ambientes, destroy e problemas conhecidos | [`terraform/README.md`](terraform/README.md) |
+| Pipelines de CI/CD e DevSecOps, configuração do Sonar, Snyk e tokens | [`docs/ci-cd.md`](docs/ci-cd.md) |
+| Manifestos das aplicações (Kustomize) e o que o ArgoCD lê | [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops) |
+| Diagrama da Fase 3 (CI/CD, GitOps, ambientes) | [`docs/fase3-cicd-gitops.drawio`](docs/fase3-cicd-gitops.drawio) |
+| Fluxo funcional entre os serviços | [`docs/fluxo-geral.md`](docs/fluxo-geral.md) |
 
 ## Índice
 
 1. [Arquitetura](#1-arquitetura)
 2. [Pré-requisitos](#2-pré-requisitos)
 3. [Ambiente local (Docker Compose)](#3-ambiente-local-docker-compose)
-4. [Construir o laboratório na AWS](#4-construir-o-laboratório-na-aws)
+4. [Subir um ambiente na AWS](#4-subir-um-ambiente-na-aws)
 5. [Testes e validação](#5-testes-e-validação)
 6. [Demonstração de escalabilidade](#6-demonstração-de-escalabilidade)
-7. [Destruir o laboratório](#7-destruir-o-laboratório)
+7. [Destruir um ambiente](#7-destruir-um-ambiente)
 8. [Custos](#8-custos)
 9. [Segurança](#9-segurança)
 10. [Estrutura do repositório](#10-estrutura-do-repositório)
@@ -25,15 +32,19 @@ Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 m
 
 ## 1. Arquitetura
 
-> Diagrama completo em [`docs/arquitetura.drawio`](docs/arquitetura.drawio), com três páginas: arquitetura AWS, segurança/IRSA e fluxo de provisionamento. Abra em [app.diagrams.net](https://app.diagrams.net) ou pela extensão Draw.io Integration do VS Code.
+> Diagramas em [`docs/`](docs/), abertos em [app.diagrams.net](https://app.diagrams.net) ou pela extensão Draw.io Integration do VS Code:
+> - [`fase3-cicd-gitops.drawio`](docs/fase3-cicd-gitops.drawio): esteira de CI/CD, GitOps, os três ambientes e o fluxo de branches.
+> - [`arquitetura.drawio`](docs/arquitetura.drawio): arquitetura AWS de um ambiente, segurança/IRSA e provisionamento (desenhado na Fase 2; a rede e os data stores continuam iguais, mas a pasta `k8s/` e o namespace único foram substituídos pelo GitOps).
 
-| Serviço | Linguagem | Porta | Persistência | Repositório |
-|---|---|---|---|---|
-| auth-service | Go | 8001 | PostgreSQL | [auth-service](https://github.com/FIAP-POS-TECH-CHALLENGE/auth-service) |
-| flag-service | Python | 8002 | PostgreSQL | [flag-service](https://github.com/FIAP-POS-TECH-CHALLENGE/flag-service) |
-| targeting-service | Python | 8003 | PostgreSQL | [targeting-service](https://github.com/FIAP-POS-TECH-CHALLENGE/targeting-service) |
-| evaluation-service | Go | 8004 | Redis (cache) | [evaluation-service](https://github.com/FIAP-POS-TECH-CHALLENGE/evaluation-service) |
-| analytics-service | Python | 8005 | DynamoDB | [analytics-service](https://github.com/FIAP-POS-TECH-CHALLENGE/analytics-service) |
+| Serviço | Linguagem | Porta | Persistência | Namespace no EKS | Repositório |
+|---|---|---|---|---|---|
+| auth-service | Go | 8001 | PostgreSQL | `auth-service` | [auth-service](https://github.com/FIAP-PosTech-DevOps/auth-service) |
+| flag-service | Python | 8002 | PostgreSQL | `flag-service` | [flag-service](https://github.com/FIAP-PosTech-DevOps/flag-service) |
+| targeting-service | Python | 8003 | PostgreSQL | `targeting-service` | [targeting-service](https://github.com/FIAP-PosTech-DevOps/targeting-service) |
+| evaluation-service | Go | 8004 | Redis (cache) | `evaluation-service` | [evaluation-service](https://github.com/FIAP-PosTech-DevOps/evaluation-service) |
+| analytics-service | Python | 8005 | DynamoDB | `analytics-service` | [analytics-service](https://github.com/FIAP-PosTech-DevOps/analytics-service) |
+
+Cada serviço tem o próprio namespace, com Pod Security `restricted`, a própria ServiceAccount e a própria Application no ArgoCD: o deploy ou o rollback de um não toca os outros.
 
 ### Fluxo de uma avaliação
 
@@ -47,6 +58,16 @@ cliente → Ingress (NLB) → evaluation-service
 
 O `evaluation-service` é o caminho quente: responde do Redis sempre que possível e publica o evento na fila de forma assíncrona, sem bloquear a resposta.
 
+### Do commit ao cluster
+
+```
+repositório do serviço ──push release/*──▶ CI (testes, Sonar, Snyk, Trivy) ──▶ ECR (imagem vX.Y.Z-<sha>)
+                                              │
+                                              └─ commit do newTag ──▶ toggle-master-gitops ──▶ ArgoCD do ambiente
+```
+
+Ninguém roda `kubectl apply` à mão. A infraestrutura de cada ambiente vem do Terraform deste repositório, e as aplicações vêm do repositório GitOps. Detalhes em [`docs/ci-cd.md`](docs/ci-cd.md).
+
 ### Por que três data stores diferentes
 
 | Store | Uso | Motivo |
@@ -57,13 +78,20 @@ O `evaluation-service` é o caminho quente: responde do Redis sempre que possív
 
 ### Equivalência entre os ambientes
 
-| Local (Docker Compose) | AWS |
+| Local (Docker Compose) | AWS (cada ambiente) |
 |---|---|
 | 3 containers PostgreSQL | 3 instâncias RDS PostgreSQL |
 | container Redis | ElastiCache Redis |
 | LocalStack (SQS + DynamoDB) | SQS e DynamoDB reais |
-| build local das imagens | ECR privado |
-| — | EKS, Ingress/NLB, HPA, KEDA |
+| build local das imagens | ECR privado (compartilhado pelos 3 ambientes) |
+| `.env` local | OpenBao + External Secrets |
+| — | EKS, Ingress/NLB, HPA, KEDA, ArgoCD |
+
+| Ambiente | Região | Recebe deploy de |
+|---|---|---|
+| develop | us-east-2 (Ohio) | push em `release/vX.Y.Z` |
+| staging | us-west-2 (Oregon) | tag `vX.Y.Z-rc.N` |
+| production | us-east-1 (N. Virginia) | tag `vX.Y.Z`, com aprovação e janela de deploy |
 
 ---
 
@@ -71,11 +99,12 @@ O `evaluation-service` é o caminho quente: responde do Redis sempre que possív
 
 ### 2.1 Estrutura de pastas
 
-Tanto o `docker-compose.yml` quanto os scripts de build referenciam os serviços por caminho relativo. **Todos os repositórios precisam estar clonados na mesma pasta pai:**
+O `docker-compose.yml` referencia os serviços por caminho relativo. **Todos os repositórios precisam estar clonados na mesma pasta pai:**
 
 ```
 ToggleMaster/
 ├── toggle-master-infra/     ← este repositório
+├── toggle-master-gitops/
 ├── auth-service/
 ├── flag-service/
 ├── targeting-service/
@@ -85,8 +114,8 @@ ToggleMaster/
 
 ```bash
 mkdir ToggleMaster && cd ToggleMaster
-for r in toggle-master-infra auth-service flag-service targeting-service evaluation-service analytics-service; do
-  git clone https://github.com/FIAP-POS-TECH-CHALLENGE/$r.git $r
+for r in toggle-master-infra toggle-master-gitops auth-service flag-service targeting-service evaluation-service analytics-service; do
+  git clone https://github.com/FIAP-PosTech-DevOps/$r.git $r
 done
 ```
 
@@ -105,11 +134,11 @@ Ajuste o caminho se você clonou em outro lugar. Para não precisar repetir a ca
 | Ferramenta | Necessária para | Versão mínima |
 |---|---|---|
 | Docker | ambos os ambientes | — |
-| Terraform | AWS | 1.6 |
+| Terraform | AWS | **1.10** (lock nativo do state no S3) |
 | AWS CLI | AWS | v2 |
-| kubectl | AWS | — |
-| helm | AWS | 3.x |
-| jq, python3, envsubst | scripts | — |
+| kubectl | AWS | compatível com o EKS 1.36 |
+| jq, python3, openssl | scripts (`openbao-bootstrap.sh`, testes) | — |
+| helm | opcional: só para depurar valores de chart | 3.x |
 
 > Rode um bloco de cada vez, não tudo de uma vez. O `newgrp docker` no final da etapa 1 substitui o shell atual e atrapalharia os comandos seguintes.
 
@@ -151,7 +180,10 @@ echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
   https://apt.releases.hashicorp.com $(lsb_release -cs) main" | \
   sudo tee /etc/apt/sources.list.d/hashicorp.list
 sudo apt update && sudo apt install -y terraform
+terraform version     # precisa ser 1.10 ou mais nova
 ```
+
+Se o Terraform já estiver instalado fora do apt (por exemplo em `~/.local/bin`, confira com `which terraform`), troque o binário pela versão nova baixada de [releases.hashicorp.com/terraform](https://releases.hashicorp.com/terraform/), ou use o [tfenv](https://github.com/tfutils/tfenv) para alternar versões.
 
 **3. AWS CLI v2**
 
@@ -169,7 +201,7 @@ sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 rm kubectl
 ```
 
-**5. Helm**
+**5. Helm (opcional)**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
@@ -178,14 +210,14 @@ curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 |
 **6. Utilitários usados pelos scripts**
 
 ```bash
-sudo apt install -y jq python3 gettext-base
+sudo apt install -y jq python3 openssl
 ```
 
 **macOS**
 
 ```bash
 brew install --cask docker
-brew install terraform awscli kubernetes-cli helm jq gettext
+brew install terraform awscli kubernetes-cli helm jq openssl
 ```
 
 > **`eksctl` não é necessário.** Ele era usado no provisionamento manual para associar o provedor OIDC ao cluster. Com Terraform, o módulo EKS faz isso sozinho via `enable_irsa = true`.
@@ -199,7 +231,7 @@ terraform version
 aws --version
 kubectl version --client
 helm version
-jq --version && python3 --version && envsubst --version | head -1
+jq --version && python3 --version && openssl version
 ```
 
 ### 2.4 Credenciais AWS
@@ -231,34 +263,35 @@ Sem isso, o `apply` falha em `aws_budgets_budget` com `AccessDenied`, mesmo com 
 
 ### 2.6 Configuração do Terraform
 
-```bash
-cd $INFRA/terraform/infra
-cp terraform.tfvars.example terraform.tfvars
-```
-
-Três linhas obrigatórias:
-
-```hcl
-alert_email                          = "seu-email@exemplo.com"
-cluster_version                      = "1.36"
-cluster_endpoint_public_access_cidrs = ["SEU.IP.PUBLICO/32"]
-```
-
-- **`alert_email`** — recebe os alertas de orçamento (50%, 80% e previsão de 100%)
-- **`cluster_version`** — confira as versões em standard support com `aws eks describe-cluster-versions --output table`. Uma versão em *extended support* custa **US$0,60/hora** em vez de US$0,10 — seis vezes mais
-- **`cluster_endpoint_public_access_cidrs`** — seu IP público, com `/32` no final. Descubra com:
+Os valores que mudam por pessoa ficam fora do Git:
 
 ```bash
-curl -s checkip.amazonaws.com
+cd $INFRA/terraform
+cp global/terraform.tfvars.example global/terraform.tfvars    # alert_email: recebe os alertas do orçamento
 ```
+
+O que muda por ambiente fica em `infra/envs/<ambiente>.tfvars` (região, AZs, CIDRs, tamanho, proteções de produção) e é versionado. A única coisa obrigatória ali é quem administra o cluster, `cluster_admin_principal_arns`:
+
+```bash
+aws sts get-caller-identity --query Arn --output text    # precisa ser :user/ ou :role/, nunca o root
+```
+
+Para a pipeline, o ARN fica versionado nos tfvars. Para um teste local sem mexer em arquivo versionado, use `infra/admin.auto.tfvars` (está no `.gitignore`). Detalhes em [`terraform/README.md`](terraform/README.md#antes-do-primeiro-infra-apply-quem-administra-o-cluster).
+
+- **Versão do EKS** (`cluster_version`, padrão `1.36`): confira as versões em standard support com `aws eks describe-cluster-versions --output table`. Uma versão em *extended support* custa **US$0,60/hora** em vez de US$0,10, seis vezes mais.
 
 > Contas criadas a partir de 15/07/2025 entram no *free plan* e só conseguem lançar `t3.micro`, `t3.small`, `t4g.micro`, `t4g.small`, `c7i-flex.large` e `m7i-flex.large`. O default do projeto é `c7i-flex.large`. Confirme a sua lista com `aws ec2 describe-instance-types --filters Name=free-tier-eligible,Values=true --query 'InstanceTypes[].InstanceType' --output text`.
 
-### 2.7 Quando o seu IP mudar
+### 2.7 Restringir o endpoint do cluster ao seu IP (opcional)
 
-IP residencial é dinâmico: o provedor troca sozinho, e trocar de rede (celular, VPN, outro wi-fi) também muda. Quando isso acontece, o `kubectl` para de responder com **`i/o timeout`** — seus pacotes passam a ser descartados pela allowlist do endpoint.
+Por padrão o endpoint público do EKS aceita qualquer origem (`0.0.0.0/0`), porque os runners do GitHub Actions também precisam alcançá-lo para aplicar o `cluster-addons`. A autenticação continua exigindo IAM. Para restringir a um IP:
 
-O tipo do erro identifica a causa sem investigação:
+```hcl
+# infra/envs/<ambiente>.tfvars
+cluster_endpoint_public_access_cidrs = ["SEU.IP.PUBLICO/32"]    # curl -s checkip.amazonaws.com
+```
+
+Com a restrição, a pipeline deixa de alcançar o cluster (exigiria runner self-hosted), e o `kubectl` para de responder quando o seu IP muda. O tipo do erro identifica a causa:
 
 | Erro do kubectl | Causa |
 |---|---|
@@ -266,51 +299,12 @@ O tipo do erro identifica a causa sem investigação:
 | `no such host` | o cluster não existe (foi destruído) |
 | `connection refused` em `localhost:8080` | kubeconfig sem contexto ativo |
 
-**Verificar:**
+Para atualizar o IP, ajuste o tfvars e rode `./tf.sh infra <ambiente> apply` (1 a 2 minutos, só muda a configuração do endpoint). Para conferir o que a AWS aplicou, sem depender do `kubectl`:
 
 ```bash
-cd $INFRA/terraform/infra
-
-echo "IP atual:    $(curl -s checkip.amazonaws.com)"
-echo "IP liberado: $(grep cluster_endpoint terraform.tfvars)"
-```
-
-**Atualizar**, se forem diferentes:
-
-```bash
-IP_NOVO=$(curl -s checkip.amazonaws.com)
-sed -i -E "s|cluster_endpoint_public_access_cidrs = \[\"[0-9./]+\"\]|cluster_endpoint_public_access_cidrs = [\"$IP_NOVO/32\"]|" terraform.tfvars
-
-grep cluster_endpoint terraform.tfvars    # confira antes de aplicar
-terraform apply                            # deve mostrar "1 to change, 0 to destroy"
-```
-
-Leva 1-2 minutos e não recria nada — só atualiza a configuração de acesso do endpoint.
-
-```bash
-kubectl get nodes
-```
-
-**Se você alterna entre redes conhecidas**, liste todas em vez de trocar toda vez:
-
-```hcl
-cluster_endpoint_public_access_cidrs = [
-  "200.102.105.118/32",   # casa
-  "203.0.113.42/32",      # escritório
-]
-```
-
-**Se o valor no tfvars já estiver correto** e mesmo assim der timeout, confirme o que a AWS realmente aplicou — pode divergir se o último `apply` não completou:
-
-```bash
-aws eks describe-cluster --name togglemaster-lab-cluster --region us-east-1 \
+aws eks describe-cluster --name togglemaster-develop-cluster --region us-east-2 \
   --query 'cluster.resourcesVpcConfig.[endpointPublicAccess,publicAccessCidrs]'
-
-aws eks describe-cluster --name togglemaster-lab-cluster --region us-east-1 \
-  --query 'cluster.status' --output text     # precisa estar ACTIVE
 ```
-
-Esses comandos falam com a API da AWS, não com o endpoint do Kubernetes — funcionam mesmo com o `kubectl` bloqueado.
 
 ---
 
@@ -438,126 +432,37 @@ Se quiser preservar os dados entre sessões, use `docker compose stop` / `docker
 
 ---
 
-## 4. Construir o laboratório na AWS
+## 4. Subir um ambiente na AWS
 
-Seis fases, ~45 minutos no total — a maior parte esperando a AWS.
-
-### Fase 1 — Infraestrutura (~20 min)
+O passo a passo completo, com o que conferir em cada etapa, está em [`terraform/README.md`](terraform/README.md). O resumo:
 
 ```bash
-cd $INFRA/terraform/infra
-terraform init
-terraform validate
-terraform plan     # confira: ~68 to add, 0 to destroy
-terraform apply
+cd $INFRA/terraform
+
+# 1 vez por conta (fica ligado; custa centavos por mês)
+./tf.sh bootstrap apply              # bucket do state
+./tf.sh global apply                 # ECR, OIDC do GitHub, roles da CI, orçamento
+../scripts/mirror-images.sh          # imagens de terceiros no ECR (precisa do Docker)
+
+# por ambiente (develop | staging | production), ~35 min
+./tf.sh infra develop apply              # VPC, EKS, RDS, Redis, DynamoDB, SQS, IRSA (~20-25 min)
+./tf.sh cluster-addons develop apply     # ALB controller, ingress-nginx, KEDA, ArgoCD, OpenBao, ESO (~5-10 min)
+../scripts/openbao-bootstrap.sh develop  # inicializa o OpenBao e grava os segredos
 ```
 
-Cria VPC, EKS, node group, 3 RDS, ElastiCache, DynamoDB, SQS + DLQ, ECR, roles IRSA, KMS, regras de pull-through cache e o alarme de orçamento.
+Depois disso o ArgoCD do ambiente sincroniza sozinho o repositório [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops). As aplicações sobem com a imagem que estiver no overlay do ambiente; até a CI publicar a primeira versão de cada serviço, elas ficam em `ImagePullBackOff` (overlay em `v0.0.0`).
 
-O control plane do EKS sozinho leva ~12 minutos. O terminal vai parecer travado em `Still creating...` — é normal, não cancele.
+**Pela pipeline.** Depois do setup da conta, a infra de um ambiente também sobe pelo GitHub Actions (`terraform.yml`): push numa `release/*` aplica em develop, a tag `-rc` em staging e a tag final em production. Para subir ou destruir sob demanda, use **Actions → terraform → Run workflow**, escolhendo o ambiente e a ação.
 
-### Fase 2 — Conectar o kubectl
+**Deploy das aplicações.** Não há mais script de deploy. Uma versão chega a um ambiente quando a CI do serviço altera o `newTag` no repositório GitOps (ver [`docs/ci-cd.md`](docs/ci-cd.md)). Para voltar uma versão, faça `git revert` do commit de deploy no repositório GitOps.
+
+Para ver o que está rodando:
 
 ```bash
-aws eks update-kubeconfig --name $(terraform output -raw cluster_name) --region us-east-1
-kubectl get nodes     # 2 nós Ready
+kubectl -n argocd get applications
+kubectl get deploy -A -l app.kubernetes.io/part-of=togglemaster \
+  -o custom-columns='NAMESPACE:.metadata.namespace,IMAGEM:.spec.template.spec.containers[0].image'
 ```
-
-**Obrigatório a cada ciclo.** O cluster é recriado do zero, então o endpoint e o certificado mudam.
-
-### Fase 3 — Espelhar as imagens de terceiros (~5 min)
-
-```bash
-cd $INFRA/k8s
-./mirror-images.sh
-```
-
-Copia para o ECR privado as imagens do KEDA (ghcr.io) e as imagens base dos Dockerfiles (Docker Hub). Precisa vir **antes** da fase 4: o KEDA aponta para o espelho, e sem ele os pods ficam em `ImagePullBackOff`.
-
-### Fase 4 — Addons do cluster (~5 min)
-
-```bash
-cd $INFRA/terraform/cluster-addons
-terraform init
-terraform apply
-```
-
-Instala metrics-server, aws-load-balancer-controller, ingress-nginx e KEDA, além do namespace `togglemaster` e das Service Accounts com IRSA.
-
-```bash
-kubectl get pods -n kube-system | grep -E 'metrics-server|load-balancer'
-kubectl get pods -n keda
-kubectl get svc -n ingress-nginx ingress-nginx-controller   # EXTERNAL-IP em 2-3 min
-```
-
-### Fase 5 — Build e push das imagens (~6 min)
-
-```bash
-cd $INFRA/k8s
-./build-and-push.sh v1
-```
-
-Os repositórios ECR são **IMMUTABLE**: subir `:v1` uma segunda vez falha de propósito. Ao iterar, use `v2`, `v3`, ou o SHA do commit:
-
-```bash
-./build-and-push.sh $(git rev-parse --short HEAD)
-```
-
-### Fase 6 — Deploy da aplicação (~4 min)
-
-```bash
-./deploy.sh v1
-```
-
-O script carrega os `init.sql` nos 3 bancos, gera ConfigMap e Secrets a partir dos outputs do Terraform, sobe o auth-service, cria a `SERVICE_API_KEY` via `POST /admin/keys` e então sobe os outros 4 serviços, o Ingress, o HPA e o KEDA.
-
-A `MASTER_KEY` é gerada na primeira execução e preservada nas seguintes. Não precisa anotá-la: fica no Secret `auth-service-secret` e o `env.sh` a recupera de lá.
-
-### Deploy parcial
-
-No dia a dia você raramente redeploya tudo — corrige o que mudou e sobe só isso. Os dois scripts aceitam lista de serviços:
-
-```bash
-cd $INFRA/k8s
-
-# um serviço
-./build-and-push.sh v2 flag-service
-./deploy-service.sh flag-service v2
-
-# dois ou três
-./build-and-push.sh v2 flag-service targeting-service
-./deploy-service.sh flag-service targeting-service v2
-
-# tudo
-./build-and-push.sh v2
-./deploy.sh v2
-```
-
-A ordem dos argumentos é livre — nomes de serviço são reconhecidos pela lista conhecida e o argumento restante vira a tag. Com vários serviços, o `deploy-service.sh` reordena por dependência (auth-service primeiro) e imprime um resumo com ✓ e ✗ ao final, mostrando onde parou caso algum falhe.
-
-Ele não toca nos outros serviços, no Ingress nem no ConfigMap compartilhado. Antes de aplicar, confere se a imagem existe no ECR — evita subir um Deployment que ficaria em `ImagePullBackOff`.
-
-Cada serviço pode estar numa tag diferente. Para ver o que está rodando:
-
-```bash
-kubectl get deploy -n togglemaster \
-  -o custom-columns='SERVIÇO:.metadata.name,IMAGEM:.spec.template.spec.containers[0].image'
-```
-
-**Rollback**, se a versão nova tiver problema:
-
-```bash
-kubectl rollout undo deploy/flag-service -n togglemaster
-kubectl rollout history deploy/flag-service -n togglemaster
-```
-
-Casos particulares:
-
-| Situação | Comando |
-|---|---|
-| Recarregar o schema de um banco | `./deploy-service.sh flag-service v2 --with-schema` |
-| Rotacionar a `SERVICE_API_KEY` | `./bootstrap-apikey.sh --force` |
-| Ver as opções do script | `./deploy-service.sh --help` |
 
 ---
 
@@ -565,29 +470,48 @@ Casos particulares:
 
 ### 5.0 Variáveis da sessão
 
-Os comandos das seções 5 e 6 usam variáveis que **mudam a cada ciclo** — a AWS gera sufixos aleatórios nos endpoints e o `deploy.sh` sorteia uma `MASTER_KEY` nova a cada execução. Carregue-as com:
+Os comandos das seções 5 e 6 usam variáveis que **mudam a cada ciclo**: a AWS gera sufixos aleatórios nos endpoints, e a `MASTER_KEY` é gerada pelo `openbao-bootstrap.sh` em cada ambiente novo. Carregue-as num terminal:
 
 ```bash
-source $INFRA/k8s/env.sh
+cd $INFRA/terraform
+AMB=develop
+OUT=$(./tf.sh infra $AMB output -json)
+export REGION=$(jq -r .aws_region.value          <<<"$OUT")
+export CLUSTER=$(jq -r .cluster_name.value       <<<"$OUT")
+export ECR=$(jq -r .ecr_registry.value           <<<"$OUT")
+export QUEUE=$(jq -r .sqs_queue_url.value        <<<"$OUT")
+export TABLE=$(jq -r .dynamodb_table_name.value  <<<"$OUT")
+export REDIS=$(jq -r .redis_endpoint.value       <<<"$OUT")
+
+aws eks update-kubeconfig --region $REGION --name $CLUSTER --alias togglemaster-$AMB >/dev/null
+export NLB=http://$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+export MASTER_KEY=$(kubectl -n auth-service get secret auth-service-secret \
+  -o jsonpath='{.data.MASTER_KEY}' | base64 -d)
+
+echo "REGION=$REGION CLUSTER=$CLUSTER NLB=$NLB"
 ```
 
-> Precisa ser `source`, não `./env.sh`. Executado normalmente, o script roda num subshell e as variáveis morrem junto com ele. O próprio script recusa a execução direta.
+Se o `NLB` vier só com `http://`, o load balancer ainda está provisionando (2 a 3 minutos depois do `cluster-addons`). Se a `MASTER_KEY` vier vazia, o `openbao-bootstrap.sh` não rodou ou o ExternalSecret ainda não sincronizou (`kubectl get externalsecrets -A`).
 
-Ele define e confere sete variáveis:
+**Repita o bloco a cada terminal novo.** Variável de ambiente existe só no shell onde foi definida.
 
-| Variável | Origem |
-|---|---|
-| `CLUSTER` | output do Terraform |
-| `ECR` | output do Terraform — host do registry |
-| `QUEUE` | output do Terraform — URL da fila SQS |
-| `TABLE` | output do Terraform — tabela DynamoDB |
-| `REDIS` | output do Terraform — endpoint do ElastiCache |
-| `NLB` | `kubectl` — hostname do Load Balancer |
-| `MASTER_KEY` | Secret `auth-service-secret` no cluster |
+**Pods de teste nos namespaces dos serviços.** Os namespaces das aplicações têm Pod Security `restricted`, e um `kubectl run` simples é recusado ali. Esta função cria o pod já com o `securityContext` exigido:
 
-Se alguma ficar vazia, o script diz o motivo provável e o comando para resolver — módulo `infra` não aplicado, Load Balancer ainda provisionando ou `deploy.sh` não executado.
+```bash
+psa_run() {   # uso: psa_run <namespace> <nome> <serviceaccount> <imagem> <args...>
+  local ns=$1 name=$2 sa=$3 img=$4; shift 4
+  local args; args=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+  kubectl run "$name" -n "$ns" --restart=Never --image="$img" --overrides="$(jq -nc \
+    --arg n "$name" --arg i "$img" --arg sa "$sa" --argjson a "$args" '{spec:{
+      serviceAccountName:$sa,
+      securityContext:{runAsNonRoot:true,runAsUser:1000,seccompProfile:{type:"RuntimeDefault"}},
+      containers:[{name:$n,image:$i,args:$a,
+        securityContext:{allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}}}]}}')"
+}
+```
 
-**Repita o `source` a cada terminal novo.** Variável de ambiente existe só no shell onde foi definida — abrir uma aba nova zera tudo.
+Os testes que não precisam de ServiceAccount rodam no namespace `default`, que não tem essa restrição.
 
 ### 5.1 Validação da infraestrutura
 
@@ -605,13 +529,21 @@ kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.a
 
 Com `c7i-flex.large`: ~29 pods e ~3,4 GiB alocáveis por nó.
 
-**Conectividade com o RDS** — valida security group, subnet group, DNS privado e credenciais de uma vez:
+**Plataforma**
 
 ```bash
-SENHA=$(aws secretsmanager get-secret-value \
-  --secret-id $(terraform output -json rds_master_user_secret_arns | jq -r .auth) \
+kubectl -n argocd get applications          # root e platform: Synced/Healthy
+kubectl get externalsecrets -A              # SecretSynced / True
+kubectl -n openbao get pods                 # openbao-0 Running 1/1 (inicializado e unsealed)
+```
+
+**Conectividade com o RDS**: valida security group, subnet group, DNS privado e credenciais de uma vez.
+
+```bash
+SENHA=$(aws secretsmanager get-secret-value --region $REGION \
+  --secret-id $(jq -r .rds_master_user_secret_arns.value.auth <<<"$OUT") \
   --query SecretString --output text | jq -r .password)
-ENDPOINT=$(terraform output -json rds_endpoints | jq -r .auth | cut -d: -f1)
+ENDPOINT=$(jq -r .rds_addresses.value.auth <<<"$OUT")
 
 kubectl run pgtest --rm -i --restart=Never \
   --image=$ECR/mirror/library/postgres:15-alpine -- \
@@ -626,27 +558,22 @@ kubectl run redistest --rm -i --restart=Never \
   redis-cli -h $REDIS ping     # PONG
 ```
 
-> As imagens de teste vêm do ECR, como todo o resto. O `aws-cli` usado a seguir vem de `public.ecr.aws` via pull-through cache — o repositório é criado sozinho no primeiro uso.
+> As imagens de teste vêm do ECR, como todo o resto. O `aws-cli` usado a seguir vem de `public.ecr.aws` via pull-through cache: o repositório é criado sozinho no primeiro uso.
 
 **IRSA concedendo o permitido**
 
 ```bash
-kubectl run irsa-ok -n togglemaster --restart=Never \
-  --overrides='{"spec":{"serviceAccountName":"analytics-service-sa"}}' \
-  --image=$ECR/ecr-public/aws-cli/aws-cli -- \
-  sqs get-queue-attributes --queue-url $QUEUE \
-    --attribute-names ApproximateNumberOfMessages
-sleep 20 && kubectl logs -n togglemaster irsa-ok && kubectl delete pod -n togglemaster irsa-ok
+psa_run analytics-service irsa-ok analytics-service-sa $ECR/ecr-public/aws-cli/aws-cli \
+  sqs get-queue-attributes --region $REGION --queue-url $QUEUE --attribute-names ApproximateNumberOfMessages
+sleep 20 && kubectl logs -n analytics-service irsa-ok && kubectl delete pod -n analytics-service irsa-ok
 ```
 
-**IRSA negando o não permitido** — aqui o resultado correto é `AccessDenied`:
+**IRSA negando o não permitido**: aqui o resultado correto é `AccessDenied`.
 
 ```bash
-kubectl run irsa-deny -n togglemaster --restart=Never \
-  --overrides='{"spec":{"serviceAccountName":"analytics-service-sa"}}' \
-  --image=$ECR/ecr-public/aws-cli/aws-cli -- \
-  dynamodb scan --table-name $TABLE
-sleep 20 && kubectl logs -n togglemaster irsa-deny && kubectl delete pod -n togglemaster irsa-deny
+psa_run analytics-service irsa-deny analytics-service-sa $ECR/ecr-public/aws-cli/aws-cli \
+  dynamodb scan --region $REGION --table-name $TABLE
+sleep 20 && kubectl logs -n analytics-service irsa-deny && kubectl delete pod -n analytics-service irsa-deny
 ```
 
 A role do analytics tem apenas `dynamodb:PutItem`. Vale gravar essa tela: prova que a permissão é granular, não um `*`.
@@ -657,11 +584,11 @@ A role do analytics tem apenas `dynamodb:PutItem`. Vale gravar essa tela: prova 
 kubectl get pods -A -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' | sort -u
 ```
 
-Tudo deve começar com `<conta>.dkr.ecr.us-east-1.amazonaws.com/`. As únicas exceções são `aws-node` e `kube-proxy`, addons gerenciados pela própria AWS.
+Quase tudo deve começar com `<conta>.dkr.ecr.us-east-1.amazonaws.com/` (o ECR fica em us-east-1 e serve os três ambientes). As exceções são os addons gerenciados pela AWS (`aws-node`, `kube-proxy`, `coredns`, driver EBS), servidos pelo ECR da própria AWS, e os charts cujas imagens não passam pelo espelho (por exemplo ArgoCD e OpenBao, vindos de `quay.io` e `ghcr.io`).
 
 ### 5.2 Validação funcional dos endpoints
 
-Usa `$NLB` e `$MASTER_KEY`, definidos em [5.0](#50-variáveis-da-sessão). A `MASTER_KEY` é lida do Secret, então você não depende de ter guardado a saída do `deploy.sh`.
+Usa `$NLB` e `$MASTER_KEY`, definidos em [5.0](#50-variáveis-da-sessão). A `MASTER_KEY` é lida do Secret criado pelo External Secrets, então não depende de ter guardado nada.
 
 **Rotas expostas pelo Ingress**
 
@@ -672,6 +599,8 @@ Usa `$NLB` e `$MASTER_KEY`, definidos em [5.0](#50-variáveis-da-sessão). A `MA
 | `POST/GET/PUT/DELETE /flags` | flag-service | API key |
 | `POST/GET/PUT/DELETE /rules` | targeting-service | API key |
 | `GET /evaluate` | evaluation-service | nenhuma |
+
+Cada serviço declara o próprio Ingress no seu namespace, e o ingress-nginx junta todos no mesmo endereço do NLB.
 
 **1. Criar uma chave de API**
 
@@ -686,7 +615,7 @@ API_KEY=$(echo "$RESP" | jq -r .key)
 echo "API_KEY=$API_KEY"
 ```
 
-Se o `jq` reclamar de `Invalid numeric literal`, a resposta não era JSON — quase sempre `Acesso não autorizado` por `MASTER_KEY` errada, ou uma página de erro do nginx porque o `$NLB` está vazio. O `echo "$RESP"` mostra qual dos dois é.
+Se o `jq` reclamar de `Invalid numeric literal`, a resposta não era JSON: quase sempre `Acesso não autorizado` por `MASTER_KEY` errada, ou uma página de erro do nginx porque o `$NLB` está vazio. O `echo "$RESP"` mostra qual dos dois é.
 
 **2. Criar uma feature flag**
 
@@ -704,9 +633,9 @@ curl -s -X POST "$NLB/rules" \
   -d '{"flag_name":"novo-checkout","rules":{"type":"PERCENTAGE","value":50}}' | jq
 ```
 
-> O `evaluator.go` implementa **apenas** `PERCENTAGE`. O `USER_LIST` aparece como exemplo no `init.sql` mas ainda não foi implementado — qualquer outro tipo cai no `return false`.
+> O `evaluator.go` implementa **apenas** `PERCENTAGE`. O `USER_LIST` aparece como exemplo no `init.sql`, mas ainda não foi implementado: qualquer outro tipo cai no `return false`.
 
-**4. Avaliar** — query parameters, sem autenticação:
+**4. Avaliar**: query parameters, sem autenticação.
 
 ```bash
 curl -s "$NLB/evaluate?user_id=u1&flag_name=novo-checkout"  | jq   # true
@@ -730,43 +659,43 @@ Buckets para a flag `novo-checkout`:
 **5. Confirmar o cache**
 
 ```bash
-kubectl logs -n togglemaster -l app=evaluation-service --tail=20 | grep -i cache
+kubectl logs -n evaluation-service -l app=evaluation-service --tail=20 | grep -i cache
 ```
 
 `Cache MISS` na primeira chamada, `Cache HIT` nas seguintes, e novo `MISS` após o TTL de 30 segundos. É a justificativa concreta do ElastiCache no desenho.
 
-> Ao **alterar** uma regra, espere 30 segundos antes de testar — o cache ainda serve o valor antigo.
+> Ao **alterar** uma regra, espere 30 segundos antes de testar: o cache ainda serve o valor antigo.
 
 **6. Confirmar a persistência dos eventos**
 
 ```bash
-kubectl get pods -n togglemaster -l app=analytics-service
-aws dynamodb scan --table-name $TABLE --select COUNT
+kubectl get pods -n analytics-service -l app=analytics-service
+aws dynamodb scan --region $REGION --table-name $TABLE --select COUNT
 ```
 
 ---
 
 ## 6. Demonstração de escalabilidade
 
-### 6.1 KEDA — analytics-service escalando por profundidade de fila
+### 6.1 KEDA: analytics-service escalando por profundidade de fila
 
 Mostre primeiro o estado inativo, que é o contraste mais visual:
 
 ```bash
-kubectl get pods -n togglemaster -l app=analytics-service   # nenhum pod
-kubectl get scaledobject -n togglemaster                     # ACTIVE: False
+kubectl get pods -n analytics-service -l app=analytics-service   # nenhum pod
+kubectl get scaledobject -n analytics-service                     # ACTIVE: False
 ```
 
 Acompanhe em dois terminais:
 
 ```bash
 # terminal 1
-watch -n2 'kubectl get pods -n togglemaster -l app=analytics-service; echo; \
-           kubectl get hpa keda-hpa-analytics-service-scaledobject -n togglemaster'
+watch -n2 'kubectl get pods -n analytics-service -l app=analytics-service; echo; \
+           kubectl get hpa -n analytics-service'
 ```
 
 ```bash
-# terminal 2 — 500 mensagens em lotes de 10
+# terminal 2 — 500 mensagens em lotes de 10 (carregue antes as variáveis da seção 5.0)
 for b in $(seq 1 50); do
   ENTRIES=$(python3 -c "
 import json,sys
@@ -775,26 +704,26 @@ print(json.dumps([{'Id':f'm{b}-{i}',
   'MessageBody':json.dumps({'user_id':f'u{b}-{i}','flag_name':'novo-checkout',
                             'result':True,'timestamp':'2026-07-30T23:59:00Z'})}
   for i in range(10)]))" $b)
-  aws sqs send-message-batch --queue-url "$QUEUE" --entries "$ENTRIES" >/dev/null
+  aws sqs send-message-batch --region "$REGION" --queue-url "$QUEUE" --entries "$ENTRIES" >/dev/null
 done
 ```
 
-Com `queueLength: 5`, 500 mensagens pedem os 10 pods do teto. O `TARGETS` mostra a profundidade da fila por pod — a prova de que a métrica de escala é a fila, não CPU.
+Com `queueLength: 5`, 500 mensagens pedem os 10 pods do teto. O `TARGETS` mostra a profundidade da fila por pod: a prova de que a métrica de escala é a fila, não CPU.
 
 Para manter os pods de pé durante a narração, rode o laço acima dentro de um `while true; do ... sleep 5; done` e interrompa com `Ctrl+C` quando quiser mostrar o retorno a zero.
 
 ```bash
-aws dynamodb scan --table-name $TABLE --select COUNT
+aws dynamodb scan --region $REGION --table-name $TABLE --select COUNT
 ```
 
 **Por que KEDA e não HPA por CPU neste serviço:** a fila pode acumular centenas de mensagens com a CPU baixa, porque o worker fica bloqueado em I/O esperando o `receive_message`. O HPA por CPU não veria pressão nenhuma. Além disso, só o KEDA escala a partir de zero.
 
-### 6.2 HPA — evaluation-service escalando por CPU
+### 6.2 HPA: evaluation-service escalando por CPU
 
 ```bash
 # terminal 1
-watch -n2 'kubectl get hpa evaluation-service-hpa -n togglemaster; echo; \
-           kubectl get pods -n togglemaster -l app=evaluation-service'
+watch -n2 'kubectl get hpa evaluation-service -n evaluation-service; echo; \
+           kubectl get pods -n evaluation-service -l app=evaluation-service'
 ```
 
 ```bash
@@ -805,108 +734,55 @@ seq 1 200000 | xargs -P 50 -I{} \
 
 O `TARGETS` sai de ~1% e passa de 70%; as réplicas vão de 2 a 6.
 
-Se a CPU não subir, sua conexão é o gargalo — o serviço é Go e responde do cache, consumindo pouquíssimo por requisição. Gere a carga de dentro do cluster:
+Se a CPU não subir, sua conexão é o gargalo: o serviço é Go e responde do cache, consumindo pouquíssimo por requisição. Gere a carga de dentro do cluster, no namespace `default`, chamando o Service pelo DNS interno:
 
 ```bash
 for i in 1 2 3; do
-  kubectl run load-$i -n togglemaster --image=$ECR/mirror/library/alpine:3.19 \
-    --restart=Never -- sh -c \
-    'while true; do wget -q -O /dev/null "http://evaluation-service:8004/evaluate?user_id=u1&flag_name=novo-checkout"; done'
+  kubectl run load-$i --image=$ECR/mirror/library/redis:7-alpine --restart=Never -- sh -c \
+    'while true; do wget -q -O /dev/null "http://evaluation-service.evaluation-service.svc:8004/evaluate?user_id=u1&flag_name=novo-checkout"; done'
 done
 
 # limpar depois
-kubectl delete pod load-1 load-2 load-3 -n togglemaster
+kubectl delete pod load-1 load-2 load-3
 ```
+
+(A imagem do Redis é usada só pelo `wget` do Alpine que vem nela: evita espelhar mais uma imagem.)
 
 ---
 
-## 7. Destruir o laboratório
+## 7. Destruir um ambiente
 
-### 7.1 A ordem importa
-
-**Três etapas, nesta sequência:**
+Na ordem inversa da criação, conferindo entre os passos. O roteiro completo, com a verificação final por região, está em [`terraform/README.md`](terraform/README.md#destruir-um-ambiente).
 
 ```bash
-cd $INFRA/k8s
-./destroy.sh                          # 1. aplicação
-
-cd $INFRA/terraform/cluster-addons
-terraform destroy                     # 2. addons do cluster
-
-cd $INFRA/terraform/infra
-terraform destroy                     # 3. recursos AWS
+cd $INFRA/terraform
+./tf.sh cluster-addons develop destroy     # 1. remove NLB e volume do OpenBao
+aws elbv2 describe-load-balancers --region us-east-2 --query 'LoadBalancers[].LoadBalancerName'   # 2. precisa ser []
+./tf.sh infra develop destroy              # 3. recursos AWS do ambiente
+aws secretsmanager delete-secret --region us-east-2 \
+  --secret-id togglemaster/develop/openbao-init --force-delete-without-recovery   # 4. segredo do bootstrap
 ```
 
-**Por que a aplicação primeiro.** O `helm uninstall` do KEDA apaga os CRDs, e para apagar um CRD o Kubernetes precisa antes remover todos os recursos daquele tipo. Só que o `ScaledObject` e o `TriggerAuthentication` têm **finalizers** que apenas o operador do KEDA sabe liberar — e o operador já foi removido junto com o chart. Ninguém libera, e o `destroy` trava até estourar o timeout, com `context deadline exceeded`.
+Pela pipeline: **Actions → terraform → Run workflow**, ambiente e ação `destroy` (o passo 4 continua manual).
 
-**Por que o `cluster-addons` antes do `infra`.** O NLB foi criado pelo aws-load-balancer-controller dentro do cluster e não está no state do Terraform. Destruindo o cluster antes, o NLB fica órfão: continua cobrando e o `destroy` da VPC falha porque ainda há um recurso pendurado nas sub-redes.
+**Por que o `cluster-addons` antes do `infra`.** O NLB foi criado pelo aws-load-balancer-controller dentro do cluster e não está no state do Terraform. Destruindo o cluster antes, o NLB fica órfão: continua cobrando e o `destroy` da VPC falha com `DependencyViolation`, porque ainda há um recurso pendurado nas sub-redes. Pelo mesmo motivo o PVC do OpenBao usa `whenDeleted: Delete`: o volume EBS sai junto com o chart.
 
-#### Se o destroy do KEDA já travou
-
-```bash
-kubectl patch scaledobject analytics-service-scaledobject -n togglemaster \
-  --type=merge -p '{"metadata":{"finalizers":null}}'
-
-kubectl delete scaledobject,triggerauthentication --all -A --timeout=30s
-
-# se os CRDs ficarem presos em Terminating
-kubectl get crd -o name | grep keda.sh | \
-  xargs -r -I{} kubectl patch {} --type=merge -p '{"metadata":{"finalizers":null}}'
-
-terraform destroy
-```
-
-### 7.2 Verificar que não sobrou nada
-
-O provider aplica a tag `Project=togglemaster` em todo recurso, o que permite uma varredura única:
-
-```bash
-aws resourcegroupstaggingapi get-resources \
-  --tag-filters Key=Project,Values=togglemaster --region us-east-1 \
-  --query 'ResourceTagMappingList[].ResourceARN' --output table
-```
-
-Vazio = limpo. Varredura por serviço, para os que mais custam:
-
-```bash
-aws eks list-clusters --region us-east-1 --query clusters --output text
-aws ec2 describe-nat-gateways --region us-east-1 \
-  --filter Name=state,Values=available,pending --query 'NatGateways[].NatGatewayId' --output text
-aws ec2 describe-addresses --region us-east-1 --query 'Addresses[].PublicIp' --output text
-aws elbv2 describe-load-balancers --region us-east-1 --query 'LoadBalancers[].LoadBalancerName' --output text
-aws rds describe-db-instances --region us-east-1 --query 'DBInstances[].DBInstanceIdentifier' --output text
-aws elasticache describe-replication-groups --region us-east-1 --query 'ReplicationGroups[].ReplicationGroupId' --output text
-```
-
-**NAT Gateway** e **Elastic IP** são os dois que mais importam: são caros e cobram em silêncio. Instância `Terminated` **não** cobra nada — o registro fica visível no console por cerca de uma hora e some.
-
-### 7.3 O que sobra de propósito
+**O que sobra de propósito**
 
 | Recurso | Motivo | Cobra? |
 |---|---|---|
-| Chave KMS em `PendingDeletion` | janela de 7 dias, proteção contra perda de dados | não |
-| Secrets agendados para deleção | janela de recuperação | não |
-| Repositórios `k8s/*`, `ecr-public/*`, `mirror/*` | criados fora do state (pull-through e espelho) | centavos de storage |
-| Log groups `/aws/eks/...` | nem sempre removidos | centavos |
+| bucket do state, ECR, OIDC, roles da CI, orçamento | stacks `bootstrap` e `global`, compartilhados pelos ambientes | centavos de storage |
+| repositórios `k8s/*`, `ecr-public/*`, `mirror/*` | cache e espelho de imagens de terceiros | centavos de storage |
+| chaves KMS do ambiente em `PendingDeletion` | janela de 7 dias, proteção contra perda de dados | não |
+| log groups `/aws/eks/...` e `/aws/rds/...` | nem sempre removidos | centavos |
 
-Os repositórios de cache e espelho **vale a pena manter** entre sessões: economizam os ~5 minutos do `mirror-images.sh` e o primeiro pull de cada imagem. Para limpar mesmo assim:
-
-```bash
-for r in $(aws ecr describe-repositories --region us-east-1 \
-            --query 'repositories[?starts_with(repositoryName, `k8s/`) ||
-                     starts_with(repositoryName, `ecr-public/`) ||
-                     starts_with(repositoryName, `mirror/`)].repositoryName' --output text); do
-  aws ecr delete-repository --repository-name "$r" --force --region us-east-1
-done
-
-aws logs delete-log-group --log-group-name /aws/eks/togglemaster-lab-cluster/cluster --region us-east-1
-```
+Os repositórios de cache e espelho **vale a pena manter** entre sessões: economizam os ~5 minutos do `mirror-images.sh` e o primeiro pull de cada imagem.
 
 ---
 
 ## 8. Custos
 
-Estimativa em `us-east-1` com as escolhas deste projeto:
+Estimativa de **um ambiente ligado**, com as escolhas deste projeto (os preços de us-east-2 e us-west-2 são praticamente os mesmos de us-east-1):
 
 | Recurso | Custo/hora | Custo/dia |
 |---|---|---|
@@ -916,46 +792,56 @@ Estimativa em `us-east-1` com as escolhas deste projeto:
 | 3x RDS `db.t3.micro` | ~US$0,051 | ~US$1,22 |
 | ElastiCache `cache.t3.micro` | ~US$0,017 | ~US$0,41 |
 | NLB | ~US$0,023 | ~US$0,60 |
-| DynamoDB / SQS / ECR | mínimo | ~US$0,05 |
-| **Total** | **~US$0,41** | **~US$9,90** |
+| DynamoDB / SQS / KMS | mínimo | ~US$0,10 |
+| **Total por ambiente** | **~US$0,41** | **~US$9,90** |
+
+Os três ambientes ligados ao mesmo tempo custam ~US$1,25/hora. Fora isso, a conta mantém o bucket do state, o ECR e o segredo do OpenBao de cada ambiente ligado (US$0,40/mês cada), tudo na casa dos centavos.
 
 **O padrão de uso muda tudo:**
 
 | Uso | Custo total |
 |---|---|
-| 8 sessões de 4h (~32h) | **~US$13** |
-| 15 sessões de 3h (~45h) | ~US$18 |
-| Ligado 24h por 10 dias | ~US$99 |
+| 8 sessões de 4h de um ambiente (~32h) | **~US$13** |
+| develop + staging + production por 3h, para a demonstração | ~US$4 |
+| 1 ambiente ligado 24h por 10 dias | ~US$99 |
 
-Com disciplina de `destroy` ao fim de cada sessão, o desafio inteiro cabe em ~15% de um crédito de US$100. O maior custo é **tempo ligado**, não tamanho de instância — o control plane do EKS cobra por hora independentemente do uso e não pode ser "pausado", só destruído.
+O maior custo é **tempo ligado**, não tamanho de instância: o control plane do EKS cobra por hora independentemente do uso e não pode ser "pausado", só destruído. Atenção também à pipeline: um push numa `release/*` ou uma tag **cria o ambiente** se ele estiver desligado.
 
-O alarme do AWS Budgets é criado automaticamente pelo módulo `infra` com alertas em 50%, 80% e previsão de 100%.
+O orçamento é criado pelo stack `global`, para a conta inteira, com alertas em 50%, 80% e previsão de 100%. O e-mail precisa ser verificado uma vez (ver [`terraform/README.md`](terraform/README.md#depois-do-global-confirmar-o-e-mail-do-orçamento)).
 
 ### Escolhas de custo embutidas (e como reverter)
 
-| Escolha | Onde mudar | Custo de reverter |
+| Escolha | Onde mudar (`infra/envs/<ambiente>.tfvars`) | Custo de reverter |
 |---|---|---|
 | 1 NAT Gateway compartilhado | `single_nat_gateway = false` | +~US$32/mês por AZ |
-| RDS single-AZ | `multi_az = true` em `rds.tf` | 2x por instância (são 3) |
-| Redis sem réplica | `num_cache_clusters = 2` | 2x |
+| RDS single-AZ | `db_multi_az = true` | 2x por instância (são 3) |
 | Nós On-Demand | `node_capacity_type = "SPOT"` | economiza ~60%, com risco de interrupção |
+| Sem proteção contra exclusão | `deletion_protection = true` (comentado em `production.tfvars`) | o destroy passa a exigir desligar a proteção antes |
 
 ---
 
 ## 9. Segurança
 
-- **Rede** — nós, RDS e ElastiCache apenas em sub-redes privadas, sem IP público. Só o NLB fica em sub-rede pública.
-- **Security Groups por camada** — RDS e Redis aceitam tráfego apenas do SG dos nós do EKS, nunca de `0.0.0.0/0` nem do CIDR da VPC inteira.
-- **IAM mínimo no nó** — a role dos nós tem apenas `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, ECR **read-only** e a permissão de pull-through **escopada aos prefixos de cache**. Nenhuma permissão de SQS, DynamoDB ou ELB.
-- **IRSA por workload** — evaluation-service (`sqs:SendMessage`), analytics-service (`sqs:Receive/Delete` + `dynamodb:PutItem`), ALB controller e KEDA (`sqs:GetQueueAttributes`), cada um com sua própria role. **Nenhuma** `AWS_ACCESS_KEY_ID` em manifesto.
-- **Senhas gerenciadas pelo RDS** — `manage_master_user_password = true`: a senha é gerada pelo RDS e guardada no Secrets Manager. Nunca passa por código, tfvars ou state.
-- **Nenhuma credencial versionada** — no ambiente local elas vêm de um `.env` fora do git; na AWS, a `MASTER_KEY` é gerada no deploy e a `SERVICE_API_KEY` é criada em runtime via `/admin/keys`. Em ambos os casos o repositório não contém segredo algum.
-- **Criptografia em repouso** — RDS, ElastiCache, ECR e os Secrets do etcd, todos com CMK própria (envelope encryption).
-- **TLS em trânsito** — conexões com o RDS usam `sslmode=require`.
+**Na esteira**
+
+- **SAST, SCA e scan de imagem bloqueando o merge**: SonarQube Cloud (Quality Gate), Snyk ou Trivy nas dependências e Trivy na imagem antes do push no ECR. Vulnerabilidade **crítica** reprova. Detalhes em [`docs/ci-cd.md`](docs/ci-cd.md).
+- **Sem chave de acesso no GitHub**: a CI assume roles da AWS por OIDC, cada uma restrita às refs que podem usá-la (`release/*`, tags `v*`, Environments).
+- **Imagem imutável**: o ECR recusa sobrescrever uma tag, e a imagem promovida para staging e production é a mesma que passou por develop.
+- **Produção com aprovação** (GitHub Environment) e janela de deploy no ArgoCD.
+
+**Na AWS e no cluster**
+
+- **Rede**: nós, RDS e ElastiCache apenas em sub-redes privadas, sem IP público. Só o NLB fica em sub-rede pública.
+- **Security Groups por camada**: RDS e Redis aceitam tráfego apenas do SG dos nós do EKS, nunca de `0.0.0.0/0` nem do CIDR da VPC inteira.
+- **IAM mínimo no nó**: a role dos nós tem apenas `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, ECR **read-only** e a permissão de pull-through **escopada aos prefixos de cache**.
+- **IRSA por workload**: evaluation-service (`sqs:SendMessage`), analytics-service (`sqs:Receive/Delete` + `dynamodb:PutItem`), ALB controller, KEDA e OpenBao, cada um com sua própria role. **Nenhuma** `AWS_ACCESS_KEY_ID` em manifesto.
+- **Segredos no OpenBao**: `DATABASE_URL`, `MASTER_KEY` e `SERVICE_API_KEY` ficam no cofre, com auto-unseal pela KMS do ambiente. O repositório GitOps só declara `ExternalSecret` (a referência), e a validação do GitOps reprova qualquer `kind: Secret`.
+- **Senhas gerenciadas pelo RDS**: `manage_master_user_password = true`. A senha é gerada pelo RDS e guardada no Secrets Manager; nunca passa por código, tfvars ou state.
+- **Criptografia em repouso**: RDS, ElastiCache, ECR, state do Terraform e os Secrets do etcd, todos com CMK própria.
+- **TLS em trânsito** com o RDS (`sslmode=require`).
 - **IMDSv2 obrigatório** nos nós, com hop limit 1: dificulta exfiltração de credenciais via SSRF.
-- **Contêineres sem root** — `runAsNonRoot`, `runAsUser: 1000`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false` e `capabilities: drop ALL`.
-- **Imagens em registro privado** — nenhuma imagem vem de registro público em runtime (ver [10.2](#102-origem-das-imagens)).
-- **DLQ na fila SQS** — após 5 tentativas a mensagem vai para a dead-letter queue em vez de travar o worker em laço infinito.
+- **Pod Security `restricted`** em cada namespace de aplicação: o cluster recusa pod que rode como root, escale privilégio ou mantenha capabilities. Os Deployments usam `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false` e `capabilities: drop ALL`, e os Dockerfiles declaram `USER` (distroless `nonroot` nos serviços Go, UID 1000 nos Python).
+- **DLQ na fila SQS**: após 5 tentativas a mensagem vai para a dead-letter queue em vez de travar o worker em laço infinito.
 
 ---
 
@@ -963,57 +849,69 @@ O alarme do AWS Budgets é criado automaticamente pelo módulo `infra` com alert
 
 ```
 toggle-master-infra/
-├── docker-compose.yml           ambiente local
-├── local-bootstrap.sh           prepara o ambiente local do zero
+├── .github/
+│   ├── workflows/
+│   │   ├── terraform.yml          plan/apply/destroy da infra por ambiente
+│   │   ├── service-ci.yml         CI reutilizável dos 5 serviços
+│   │   ├── service-promote.yml    promoção por tag (staging, production)
+│   │   ├── git-release.yml        botões de release (reutilizável)
+│   │   └── release.yml            botões de release deste repositório
+│   └── actions/gitops-set-image/  commit do newTag no repositório GitOps
+├── docker-compose.yml             ambiente local
+├── local-bootstrap.sh             prepara o ambiente local do zero
 ├── docs/
-│   └── arquitetura.drawio     diagramas (arquitetura, segurança, deploy)
-├── terraform/
-│   ├── infra/                   VPC, EKS, RDS, ElastiCache, DynamoDB, SQS, ECR, IRSA, KMS
-│   └── cluster-addons/          metrics-server, ALB controller, ingress-nginx, KEDA
-└── k8s/
-    ├── 01..09 *.yaml            manifestos da aplicação
-    ├── mirror-images.sh         espelha imagens de terceiros para o ECR
-    ├── build-and-push.sh        build e push das 5 imagens
-    └── deploy.sh                deploy completo da aplicação
+│   ├── ci-cd.md                   pipelines, ferramentas de segurança e setup
+│   ├── fase3-cicd-gitops.drawio   diagrama da Fase 3
+│   ├── arquitetura.drawio         arquitetura AWS (Fase 2)
+│   └── fluxo-geral.md             fluxo funcional entre os serviços
+├── scripts/
+│   ├── mirror-images.sh           espelha imagens de terceiros no ECR
+│   ├── openbao-bootstrap.sh       inicializa o OpenBao e grava os segredos
+│   └── argocd-repo-credentials.sh só se o repositório GitOps for privado
+├── terraform/                     bootstrap, global, módulos, infra e cluster-addons (ver o README da pasta)
+├── Postman/                       coleção de requisições da API
+└── k8s/                           LEGADO da Fase 2: substituído pelo toggle-master-gitops
 ```
 
-Cada pasta tem seu próprio README com as decisões técnicas e as variáveis do módulo.
+### 10.1 Por que dois stacks por ambiente
 
-### 10.1 Por que dois módulos Terraform
-
-Os providers `kubernetes` e `helm` precisam se conectar a um cluster que já exista **no momento do `plan`**. Num apply único, na primeira execução o cluster ainda não existe e o plan falha. Dois states separados é o padrão recomendado para esse cenário.
+Os providers `kubernetes` e `helm` precisam se conectar a um cluster que já exista **no momento do `plan`**. Num apply único, na primeira execução o cluster ainda não existe e o plan falha. Por isso `infra` (AWS) e `cluster-addons` (dentro do cluster) têm states separados. O `bootstrap` e o `global` ficam à parte porque pertencem à conta, não a um ambiente.
 
 ### 10.2 Origem das imagens
 
 | Origem original | Passa a vir de | Mecanismo |
 |---|---|---|
-| build local | `<ecr>/togglemaster/*` | `build-and-push.sh` |
+| repositórios dos serviços | `<ecr>/togglemaster/*` | CI (`service-ci.yml`), tag `vX.Y.Z-<sha>` |
 | `registry.k8s.io` | `<ecr>/k8s/*` | pull-through cache (Terraform) |
 | `public.ecr.aws` | `<ecr>/ecr-public/*` | pull-through cache (Terraform) |
-| `ghcr.io` (KEDA) | `<ecr>/mirror/kedacore/*` | `mirror-images.sh` |
-| Docker Hub (bases) | `<ecr>/mirror/library/*` | `mirror-images.sh` |
+| `ghcr.io` (KEDA) | `<ecr>/mirror/kedacore/*` | `scripts/mirror-images.sh` |
+| Docker Hub (bases e testes) | `<ecr>/mirror/library/*` | `scripts/mirror-images.sh` |
 
-O pull-through cache é declarativo e funciona sem credencial para `registry.k8s.io`, `public.ecr.aws` e `quay.io`. Docker Hub e ghcr.io exigiriam token no Secrets Manager, por isso são espelhados por script.
+O pull-through cache é declarativo e funciona sem credencial para `registry.k8s.io` e `public.ecr.aws`. Docker Hub e ghcr.io exigiriam token no Secrets Manager, por isso são espelhados por script.
 
 Os Dockerfiles usam `ARG BASE_REGISTRY` com default no Docker Hub, para o build local continuar funcionando sem AWS.
 
 ### 10.3 Convenção de branches
 
 ```
-tipo/escopo-descricao-nome
+tipo/escopo-descricao
 ```
 
 | Prefixo | Quando usar |
 |---|---|
 | `feature/` | nova funcionalidade |
 | `fix/` | correção de bug |
-| `infra/` | infraestrutura, pipelines, configs |
 | `chore/` | manutenção geral |
 | `docs/` | documentação |
+| `release/vX.Y.Z` | criada pelo botão `criar-release`; recebe os PRs e sobe em develop |
+
+As tags `vX.Y.Z-rc.N` (staging) e `vX.Y.Z` (production) são criadas pelos botões de promoção. Fluxo completo em [`docs/ci-cd.md`](docs/ci-cd.md).
 
 ---
 
 ## 11. Troubleshooting
+
+Os problemas do Terraform e do provisionamento (versão, ECR de fase anterior, OIDC, OpenBao, ArgoCD, destroy) estão em [`terraform/README.md`](terraform/README.md#problemas-conhecidos).
 
 ### Ambiente local
 
@@ -1021,52 +919,37 @@ tipo/escopo-descricao-nome
 |---|---|
 | `no such file or directory` no `docker compose up` | repositórios não estão na mesma pasta pai (ver 2.1) |
 | conflito de porta | outro processo usando as portas da tabela 3.3 |
-| `required variable ... is missing a value` | falta criar o `.env` — rode `./local-bootstrap.sh` |
-| `401` ao avaliar uma flag localmente | `SERVICE_API_KEY` inválida — rode `./local-bootstrap.sh` |
+| `required variable ... is missing a value` | falta criar o `.env`: rode `./local-bootstrap.sh` |
+| `401` ao avaliar uma flag localmente | `SERVICE_API_KEY` inválida: rode `./local-bootstrap.sh` |
 | `Acesso não autorizado` no `local-bootstrap.sh` | a `MASTER_KEY` do `.env` difere da do container: `docker compose up -d --force-recreate auth-service` |
-| `Não foi possível conectar ao banco de dados` | corrida de inicialização — resolvida pelos healthchecks; se voltar a ocorrer, veja `docker compose ps` e confirme que os Postgres estão `(healthy)` |
+| `Não foi possível conectar ao banco de dados` | corrida de inicialização, resolvida pelos healthchecks; se voltar a ocorrer, veja `docker compose ps` e confirme que os Postgres estão `(healthy)` |
 
 ### Terraform
 
 | Sintoma | Causa |
 |---|---|
-| `ResourceNotFoundException` no `cluster-addons` | o módulo `infra` não foi aplicado |
 | `AccessDenied` em `aws_budgets_budget` | falta liberar o acesso do IAM ao billing (ver 2.5) |
 | `not eligible for Free Tier` no node group | tipo de instância fora da lista do free plan (ver 2.6) |
-| erro de CIDR inválido | octeto acima de 255 em `cluster_endpoint_public_access_cidrs` |
-| `kubectl` com `i/o timeout` | seu IP público mudou e saiu da allowlist — ver [2.7](#27-quando-o-seu-ip-mudar) |
-| blocos `set` marcados em vermelho no VS Code | falta rodar `terraform init` na pasta — o language server valida contra o schema mais recente |
+| `kubectl` com `i/o timeout` | endpoint restrito e seu IP mudou (ver [2.7](#27-restringir-o-endpoint-do-cluster-ao-seu-ip-opcional)) |
+| blocos `set` marcados em vermelho no VS Code | falta rodar `terraform init` na pasta: o language server valida contra o schema mais recente |
 | `context deadline exceeded` em `helm_release` | pods não ficaram prontos; investigue com `kubectl get pods -n <ns>` |
 | erro de TLS no webhook do ALB controller após upgrade | certificado dessincronizado: `kubectl rollout restart deploy/aws-load-balancer-controller -n kube-system` |
-| `RepositoryNotEmptyException` no destroy | repositórios ECR criados **antes** de `force_delete = true` existir no config. Atributos como esse valem a partir do state, não do config — veja abaixo |
-
-#### `RepositoryNotEmptyException` no destroy
-
-Acontece se os repositórios foram criados antes de o `force_delete = true` estar no `ecr.tf`. Rodar `apply` para atualizar o state não é opção quando o resto da infra já foi destruído — ele tentaria recriar tudo. Esvazie pela CLI:
-
-```bash
-for svc in auth-service flag-service targeting-service evaluation-service analytics-service; do
-  aws ecr delete-repository --repository-name togglemaster/$svc --force --region us-east-1 >/dev/null
-done
-terraform destroy
-```
-
-Nos ciclos seguintes não acontece: os repositórios passam a nascer já com `force_delete = true` no state.
 
 ### Cluster e aplicação
 
 | Sintoma | Causa |
 |---|---|
-| `ImagePullBackOff` | faltou `mirror-images.sh`, ou a tag não existe no ECR |
-| `exec format error` | imagem arm64 em nó amd64 — rebuilde com `--platform linux/amd64` |
-| `CreateContainerConfigError` | Secret ou ConfigMap ausente |
+| Application `Degraded` com `ImagePullBackOff` | a tag do overlay não existe no ECR (normal até a primeira CI, overlay em `v0.0.0`), ou faltou o `mirror-images.sh` |
+| Application `OutOfSync` com sync falhando | veja o Job de migração do banco (`kubectl get jobs -n <serviço>`): ele roda antes do Deployment e, se falhar, o sync para |
+| `pods "x" is forbidden: violates PodSecurity "restricted"` | pod de teste num namespace de aplicação: use a função `psa_run` da seção 5.0 |
+| `CreateContainerConfigError` | Secret ausente: confira o ExternalSecret do serviço (`kubectl get externalsecrets -n <serviço>`) |
+| `exec format error` | imagem arm64 em nó amd64: rebuilde com `--platform linux/amd64` |
 | pod Python em `CrashLoopBackOff` | veja `kubectl logs`; frequentemente é a `DATABASE_URL` |
-| `invalid port ... after host` no log | senha do RDS sem percent-encoding |
-| `AccessDenied` da AWS nos logs do pod | Deployment sem `serviceAccountName`, ou `cluster-addons` não aplicado |
+| `AccessDenied` da AWS nos logs do pod | ServiceAccount sem a anotação de IRSA do ambiente (overlay) |
 | Ingress com `EXTERNAL-IP <pending>` | `kubectl logs -n kube-system deploy/aws-load-balancer-controller` |
 | HPA com `TARGETS <unknown>` | metrics-server ainda coletando (aguarde ~60s) ou não instalado |
-| ScaledObject sem escalar | `kubectl logs -n keda deploy/keda-operator` — quase sempre IRSA |
-| `kubectl` com timeout após novo apply | seu IP mudou, ou falta `aws eks update-kubeconfig` |
+| ScaledObject sem escalar | `kubectl logs -n keda deploy/keda-operator`: quase sempre IRSA |
+| mudança feita com `kubectl` some sozinha | é o `selfHeal` do ArgoCD: mude pelo repositório GitOps |
 
 ### Debugar valores de Helm chart
 
@@ -1076,4 +959,4 @@ O Helm aceita qualquer `--set` **sem validar**: uma chave inexistente não gera 
 helm template <release> <repo>/<chart> --version <ver> --set <chave>=<valor> | grep "image:"
 ```
 
-Cada chart estrutura o endereço da imagem de um jeito diferente — alguns usam `image.repository` com o endereço completo, outros separam `image.registry` do caminho, e o KEDA define o registry **por componente**.
+Cada chart estrutura o endereço da imagem de um jeito diferente: alguns usam `image.repository` com o endereço completo, outros separam `image.registry` do caminho, e o KEDA define o registry **por componente**.

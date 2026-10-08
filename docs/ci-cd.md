@@ -88,9 +88,11 @@ Numa empresa, o equivalente mais robusto é um **GitHub App** da organização, 
 | Secret | `SONAR_TOKEN` | token do SonarQube Cloud |
 | Secret | `SNYK_TOKEN` | token do Snyk |
 | Secret | `CI_GITHUB_TOKEN` | o fine-grained token do passo 3 |
-| Variable | `AWS_ACCOUNT_ID` | número da conta AWS |
+| Variable | `AWS_ACCOUNT_ID` | número da conta AWS (12 dígitos; não é segredo) |
 | Variable | `SONAR_ORGANIZATION` | chave da organização no Sonar |
 | Variable | `SCA_TOOL` | opcional: `snyk` ou `trivy` |
+
+Na criação, a visibilidade **"Public repositories"** basta enquanto os repositórios forem públicos. Se algum virar privado, troque para *All repositories* ou *Selected repositories*, ou ele deixa de enxergar o valor.
 
 Se o plano da organização não permitir secrets de organização para repositórios públicos, cadastre os mesmos nomes em cada repositório.
 
@@ -108,9 +110,18 @@ No `toggle-master-infra`, os Environments são `develop`, `staging` e `productio
 - `main`: só via PR, com os checks da pipeline passando.
 - tags `v*`: ninguém apaga nem move. Uma versão publicada é imutável, como a imagem no ECR.
 
+### 7. Primeira entrada dos workflows na `main` (uma vez por repositório)
+
+O fluxo normal é `feature/*` → `release/*`, mas os botões de release só aparecem na aba **Actions** quando o `release.yml` já está na branch padrão (o GitHub só lista workflows manuais da `main`). Por isso, na primeira vez, cada repositório recebe os workflows por um **PR direto para a `main`**:
+
+1. `toggle-master-infra` primeiro: os serviços chamam os reutilizáveis em `@main`, então eles precisam estar lá antes de qualquer pipeline de serviço rodar. O plan desse PR falha no passo da AWS até o `global` ser aplicado; é esperado.
+2. Os 5 serviços depois, **só com os passos 1 a 5 feitos**. O PR já roda build, testes e scans, e falharia sem `SONAR_TOKEN`, `SNYK_TOKEN` e as variáveis.
+
+Use **Squash and merge** e mantenha a branch de origem. Daqui em diante, nenhuma mudança vai direto para a `main`.
+
 ## Uso no dia a dia
 
-1. **Abrir uma release:** Actions → **release** → Run workflow → `criar-release` (`minor` para funcionalidade nova, `patch` para correção).
+1. **Abrir uma release:** Actions → **release** → Run workflow → `criar-release` (`minor` para funcionalidade nova, `patch` para correção). A release nasce da `main`.
 2. **Desenvolver:** branch `feature/...` ou `fix/...` a partir da release, e PR para `release/vX.Y.Z`. O PR roda os testes e os scans; o merge publica a imagem e sobe em develop.
 3. **Promover para staging:** botão `promover-staging`. Corrigiu algo na release? Rode de novo e saem `rc.2`, `rc.3`...
 4. **Promover para produção:** botão `promover-producao`. Aprove no Environment; o ArgoCD aplica dentro da janela de deploy.
