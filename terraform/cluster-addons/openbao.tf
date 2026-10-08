@@ -12,6 +12,12 @@
 # Modo standalone (1 réplica) com storage pebbledb num volume EBS, e
 # auto-unseal pela CMK do ambiente (IRSA, ver módulo workload-identity).
 # HA com 3 réplicas Raft seria o próximo passo numa produção real.
+#
+# A partir do OpenBao 2.7 o seal "awskms" deixou de ser embutido no binário:
+# ele virou um plugin do tipo "kms", baixado como imagem OCI na subida do
+# servidor (plugin_auto_download). Sem o bloco `plugin "kms" "awskms"` o pod
+# entra em CrashLoopBackOff com "unknown wrapper: awskms". O plugin herda o
+# ambiente do servidor, então usa as mesmas credenciais IRSA.
 # -----------------------------------------------------------------------------
 resource "helm_release" "openbao" {
   name             = "openbao"
@@ -41,6 +47,17 @@ resource "helm_release" "openbao" {
         storageClass = kubernetes_storage_class_v1.gp3.metadata[0].name
       }
 
+      # Diretório dos plugins baixados na subida (o plugin de unseal).
+      # emptyDir: é baixado de novo a cada restart, sem ocupar o PVC.
+      volumes = [{
+        name     = "plugins"
+        emptyDir = {}
+      }]
+      volumeMounts = [{
+        name      = "plugins"
+        mountPath = "/openbao/plugins"
+      }]
+
       # Sem isto o PVC (e o volume EBS) sobrevive ao destroy e fica
       # cobrando storage depois que o ambiente foi embora.
       persistentVolumeClaimRetentionPolicy = {
@@ -66,6 +83,14 @@ resource "helm_release" "openbao" {
 
           storage "pebbledb" {
             path = "/openbao/data/pebbledb"
+          }
+
+          # Plugin de auto-unseal (OpenBao 2.7+), fixado por digest.
+          plugin_directory     = "/openbao/plugins"
+          plugin_auto_download = true
+
+          plugin "kms" "awskms" {
+            image = "${var.openbao_kms_plugin_image}"
           }
 
           # Auto-unseal: a chave mestra do OpenBao é cifrada por esta CMK.
