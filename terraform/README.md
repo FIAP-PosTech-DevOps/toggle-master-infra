@@ -24,7 +24,7 @@ terraform/
 
 | Ferramenta | Versão | Usada em |
 |---|---|---|
-| Terraform | **1.10 ou mais nova** (a CI usa a série 1.13; testado também com 1.16) | todos os stacks. O lock nativo no S3 (`use_lockfile`) não existe antes da 1.10, e o `init` falha com `Unsupported Terraform Core version` |
+| Terraform | **1.10 ou mais nova** (a CI e o teste local usam a série 1.16) | todos os stacks. O lock nativo no S3 (`use_lockfile`) não existe antes da 1.10, e o `init` falha com `Unsupported Terraform Core version` |
 | AWS CLI | v2 | `tf.sh` (descobre o account ID) e scripts |
 | kubectl | compatível com o EKS 1.36 | acesso ao cluster e `openbao-bootstrap.sh` |
 | Docker | qualquer | `mirror-images.sh` |
@@ -48,7 +48,7 @@ Os comandos rodam a partir de `terraform/`.
 
 Depois do passo 5, o ArgoCD passa a sincronizar sozinho o repositório [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops) (pasta `clusters/<ambiente>`). Antes do primeiro ambiente, rode lá o `scripts/set-aws-account.sh` para trocar o account ID dos manifestos.
 
-Os passos 4 a 7 podem rodar para os três ambientes em paralelo, em terminais separados: cada um tem seu state, sua região e seus nomes. A pipeline (`terraform.yml`) automatiza os passos 4 e 5; os passos 1 a 3 são da conta e ficam manuais de propósito, porque criam o bucket e as roles que a própria pipeline usa.
+Os passos 4 a 7 podem rodar para os três ambientes em paralelo, em terminais separados: cada um tem seu state, sua região e seus nomes. A pipeline (`terraform.yml`) automatiza os passos 4 a 6; os passos 1 a 3 são da conta e ficam manuais de propósito, porque criam o bucket e as roles que a própria pipeline usa.
 
 ### Antes do `global` (conta reaproveitada)
 
@@ -132,6 +132,8 @@ aws secretsmanager delete-secret --region us-east-2 \
 ```
 
 Se o passo 2 mostrar um load balancer, apague-o antes do passo 3; senão o destroy da VPC falha com `DependencyViolation`.
+
+Pela pipeline (**Actions → terraform → Run workflow**, ação `destroy`), os quatro passos rodam em sequência: o job espera os load balancers saírem da VPC antes do destroy da infra e apaga o segredo do OpenBao no final.
 
 Verificação final (todas as saídas vazias):
 

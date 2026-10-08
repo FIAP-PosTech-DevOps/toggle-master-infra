@@ -452,7 +452,7 @@ cd $INFRA/terraform
 
 Depois disso o ArgoCD do ambiente sincroniza sozinho o repositório [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops). As aplicações sobem com a imagem que estiver no overlay do ambiente; até a CI publicar a primeira versão de cada serviço, elas ficam em `ImagePullBackOff` (overlay em `v0.0.0`).
 
-**Pela pipeline.** Depois do setup da conta, a infra de um ambiente também sobe pelo GitHub Actions (`terraform.yml`): push numa `release/*` aplica em develop, a tag `-rc` em staging e a tag final em production. Para subir ou destruir sob demanda, use **Actions → terraform → Run workflow**, escolhendo o ambiente e a ação.
+**Pela pipeline.** Depois do setup da conta, um ambiente inteiro (infra, addons e `openbao-bootstrap`) também sobe pelo GitHub Actions (`terraform.yml`): push numa `release/*` aplica em develop, a tag `-rc` em staging e a tag final em production. Para subir ou destruir sob demanda, use **Actions → terraform → Run workflow**, escolhendo o ambiente e a ação.
 
 **Deploy das aplicações.** Não há mais script de deploy. Uma versão chega a um ambiente quando a CI do serviço altera o `newTag` no repositório GitOps (ver [`docs/ci-cd.md`](docs/ci-cd.md)). Para voltar uma versão, faça `git revert` do commit de deploy no repositório GitOps.
 
@@ -763,7 +763,7 @@ aws secretsmanager delete-secret --region us-east-2 \
   --secret-id togglemaster/develop/openbao-init --force-delete-without-recovery   # 4. segredo do bootstrap
 ```
 
-Pela pipeline: **Actions → terraform → Run workflow**, ambiente e ação `destroy` (o passo 4 continua manual).
+Pela pipeline: **Actions → terraform → Run workflow**, ambiente e ação `destroy`. O job faz os quatro passos, incluindo a espera pelos load balancers e o segredo do OpenBao.
 
 **Por que o `cluster-addons` antes do `infra`.** O NLB foi criado pelo aws-load-balancer-controller dentro do cluster e não está no state do Terraform. Destruindo o cluster antes, o NLB fica órfão: continua cobrando e o `destroy` da VPC falha com `DependencyViolation`, porque ainda há um recurso pendurado nas sub-redes. Pelo mesmo motivo o PVC do OpenBao usa `whenDeleted: Delete`: o volume EBS sai junto com o chart.
 
