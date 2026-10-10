@@ -95,8 +95,16 @@ jobs:
             elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]];               then ENVIRONMENT=production
             else echo "tag fora do padrão vX.Y.Z ou vX.Y.Z-rc.N: $TAG"; exit 1
             fi
+          elif [[ "${{ github.event.created }}" == "true" ]]; then
+            # Branch release/* recém-criada pelo botão criar-release: ela é
+            # uma cópia da main, então não há nada novo para aplicar. Sem
+            # este caso, criar a release subiria o develop com o código da
+            # main antes de qualquer demanda entrar no pacote.
+            ACTION=none
+            ENVIRONMENT=develop
+            echo "release criada a partir da main: nada a aplicar" >> "$GITHUB_STEP_SUMMARY"
           else
-            # push em release/*
+            # push em release/* (merge de um PR no pacote)
             ACTION=apply
             ENVIRONMENT=develop
           fi
@@ -149,7 +157,7 @@ jobs:
   # ---------------------------------------------------------------------------
   plan:
     needs: [resolve, static]
-    if: needs.resolve.outputs.action != 'destroy'
+    if: needs.resolve.outputs.action == 'plan' || needs.resolve.outputs.action == 'apply'
     runs-on: ubuntu-latest
     concurrency:
       group: terraform-${{ needs.resolve.outputs.environment }}
