@@ -9,9 +9,10 @@ vpc_cidr             = "10.10.0.0/16"
 public_subnet_cidrs  = ["10.10.0.0/24", "10.10.1.0/24"]
 private_subnet_cidrs = ["10.10.10.0/24", "10.10.11.0/24"]
 
-# OBRIGATÓRIO: o seu usuário/role IAM, para ter kubectl no cluster.
+# OBRIGATÓRIO: quem administra o cluster (kubectl), além das roles da CI.
+# Usuário ou role IAM, nunca o root. Fica versionado para a pipeline usar.
 #   aws sts get-caller-identity --query Arn --output text
-# cluster_admin_principal_arns = ["arn:aws:iam::123456789012:user/seu-usuario"]
+cluster_admin_principal_arns = ["arn:aws:iam::413816840261:user/admin-cli"]
 
 # RECOMENDADO: restrinja o endpoint do cluster ao seu IP (curl ifconfig.me).
 # Atenção: o GitHub Actions também precisa alcançar o endpoint para o
