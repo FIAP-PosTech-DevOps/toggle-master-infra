@@ -286,7 +286,7 @@ cd cluster-addons && ./check-chart-versions.sh 1.36
 | `Unsupported Terraform Core version` no `init` | Terraform anterior à 1.10 | atualize o Terraform (ver [Pré-requisitos](#pré-requisitos)) e apague os `.terraform/` antigos |
 | `RepositoryAlreadyExistsException` no `global` | repositórios ECR de uma fase anterior | ver [Antes do `global`](#antes-do-global-conta-reaproveitada) |
 | `Request ARN is invalid` no `configure-aws-credentials` | variável `AWS_ACCOUNT_ID` não cadastrada no GitHub | crie a variável na organização |
-| `Could not assume role` / `Not authorized ... AssumeRoleWithWebIdentity` | o `global` ainda não foi aplicado, ou o job roda numa ref que a role não aceita | aplique o `global`; confira a tabela de roles acima |
+| `Could not assume role` / `Not authorized ... AssumeRoleWithWebIdentity` | o `global` ainda não foi aplicado; o job roda numa ref que a role não aceita; ou o `sub` do token não bate com a trust policy (repositórios criados a partir de 15/07/2026 usam o formato imutável `repo:<org>@<owner_id>/<repo>@<repo_id>:...`) | aplique o `global`; confira a tabela de roles acima e os IDs em `global/variables.tf` (`github_owner_id`, `github_repository_ids`) |
 | alertas do orçamento não chegam | e-mail ainda não verificado | ver [Depois do `global`](#depois-do-global-confirmar-o-e-mail-do-orçamento) |
 | KEDA em `ImagePullBackOff` | o `mirror-images.sh` não rodou | rode o passo 3 e espere o próximo restart do pod |
 | `openbao-0` em `CrashLoopBackOff` com `unknown wrapper: awskms` | configuração antiga, sem o plugin KMS | aplique o `cluster-addons` atual e apague o pod `openbao-0` |
