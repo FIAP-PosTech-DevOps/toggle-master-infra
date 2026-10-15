@@ -102,6 +102,17 @@ variable "openbao_chart_version" {
   default     = "0.30.0"
 }
 
+variable "openbao_kms_plugin_image" {
+  description = "Plugin de auto-unseal AWS KMS do OpenBao 2.7+ (imagem OCI). Fixe sempre por digest: o servidor baixa e executa esse binário com acesso à chave de unseal."
+  type        = string
+  default     = "ghcr.io/openbao/openbao-plugin-kms-aws:v0.1.0@sha256:fe9fb94872048c9474156c044ea8852bb5c2e968fc9304a3725e4d434b488541"
+
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.openbao_kms_plugin_image))
+    error_message = "openbao_kms_plugin_image precisa estar fixada por digest (...@sha256:<64 hex>)."
+  }
+}
+
 variable "external_secrets_chart_version" {
   description = "Chart external-secrets."
   type        = string

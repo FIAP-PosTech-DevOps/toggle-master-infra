@@ -58,23 +58,41 @@ variable "github_org" {
   default     = "FIAP-PosTech-DevOps"
 }
 
+variable "github_owner_id" {
+  description = "ID numérico da organização no GitHub. Entra no `sub` imutável do token OIDC. Consulta: curl -s https://api.github.com/orgs/<org> | jq .id"
+  type        = number
+  default     = 286820110
+}
+
+variable "github_repository_ids" {
+  description = "ID numérico de cada repositório que assume role na AWS (5 serviços + infra). Consulta: curl -s https://api.github.com/repos/<org>/<repo> | jq .id"
+  type        = map(number)
+  default = {
+    "toggle-master-infra" = 1318967721
+    "auth-service"        = 1312425511
+    "flag-service"        = 1312425607
+    "targeting-service"   = 1312426103
+    "evaluation-service"  = 1312430026
+    "analytics-service"   = 1312446703
+  }
+}
+
 variable "infra_repository" {
   description = "Repositório que contém este Terraform. Só ele pode assumir as roles de plan/apply."
   type        = string
   default     = "toggle-master-infra"
 }
 
-variable "ci_push_refs" {
+variable "ci_push_environments" {
   description = <<-EOT
-    Refs Git dos serviços que podem publicar imagem no ECR (padrão
-    StringLike). Estratégia de branches do projeto: as demandas entram por PR
-    numa release/vX.Y.Z; cada push na release gera imagem e sobe em develop.
-    As tags vX.Y.Z-rc.N (staging) e vX.Y.Z (production) só promovem a imagem
-    já publicada, mas também podem consultar o ECR. PRs e feature/* rodam a
-    pipeline sem publicar nada.
+    GitHub Environments dos repositórios de serviço que podem assumir a role
+    de publicação no ECR. Só os jobs de deploy declaram `environment:`:
+    develop (botão com qualquer branch), staging (push em release/*) e
+    production (merge release -> main, que só confere e re-escaneia a imagem).
+    PRs e qualquer outro job rodam sem credencial da AWS.
   EOT
   type        = list(string)
-  default     = ["refs/heads/release/*", "refs/tags/v*"]
+  default     = ["develop", "staging", "production"]
 }
 
 variable "deploy_environments" {

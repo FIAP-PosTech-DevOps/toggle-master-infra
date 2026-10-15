@@ -6,9 +6,20 @@
 # temporárias de uma role — desde que o `sub` do token (repositório + branch
 # ou environment) case com a trust policy abaixo.
 #
+# Formato do `sub`: repositórios criados a partir de 15/07/2026 (todos os
+# deste projeto) recebem o formato IMUTÁVEL, com os IDs numéricos do dono e
+# do repositório:
+#
+#   repo:FIAP-PosTech-DevOps@<owner_id>/toggle-master-infra@<repo_id>:pull_request
+#
+# O ID não muda se alguém apagar a organização e outra pessoa recriar uma com
+# o mesmo nome: a trust policy deixa de confiar só no nome. Os IDs estão em
+# variables.tf (github_owner_id e github_repository_ids).
+#
 # Três roles, cada uma com o mínimo que o job precisa:
 #
-#   gha-ecr-push         repos dos serviços, só em release/* e tags v*
+#   gha-ecr-push         repos dos serviços, só jobs dos Environments develop,
+#                        staging e production (os jobs de deploy)
 #   gha-terraform-plan   repo de infra, qualquer branch/PR, somente leitura
 #   gha-terraform-apply  repo de infra, só via GitHub Environment (com
 #                        aprovação configurável no GitHub), admin
@@ -20,21 +31,33 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   oidc_host  = "token.actions.githubusercontent.com"
 
-  # repo:<org>/<repo>:ref:<ref>, para cada serviço x ref permitida
-  # (ex.: repo:FIAP-PosTech-DevOps/auth-service:ref:refs/heads/release/*).
+  # Prefixo imutável de cada repositório: repo:<org>@<owner_id>/<repo>@<repo_id>
+  repo_subject = {
+    for repo, id in var.github_repository_ids :
+    repo => "repo:${var.github_org}@${var.github_owner_id}/${repo}@${id}"
+  }
+
+  # Jobs que declaram `environment:` recebem um sub com o environment no lugar
+  # da branch: <prefixo>:environment:<nome>. É o que as roles de escrita usam:
+  # a branch do develop é livre (qualquer feature), mas só o job de deploy,
+  # dentro de um Environment, recebe credencial.
+
+  # Cada serviço x environment
+  # (ex.: repo:FIAP-PosTech-DevOps@286820110/auth-service@1312425511:environment:staging).
   ecr_push_subjects = flatten([
     for repo in var.services : [
-      for ref in var.ci_push_refs :
-      "repo:${var.github_org}/${repo}:ref:${ref}"
+      for env in var.ci_push_environments :
+      "${local.repo_subject[repo]}:environment:${env}"
     ]
   ])
 
-  # Jobs que declaram `environment:` recebem um sub com o environment no lugar
-  # da branch: repo:<org>/<repo>:environment:<nome>.
   apply_subjects = [
     for env in var.deploy_environments :
-    "repo:${var.github_org}/${var.infra_repository}:environment:${env}"
+    "${local.repo_subject[var.infra_repository]}:environment:${env}"
   ]
+
+  # Qualquer branch, tag ou PR do repositório de infra (role somente leitura).
+  plan_subject = "${local.repo_subject[var.infra_repository]}:*"
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -67,9 +90,9 @@ data "aws_iam_policy_document" "trust_ecr_push" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # StringLike por causa dos curingas (release/*, v*).
+    # Lista fechada, sem curinga: StringEquals.
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
       values   = local.ecr_push_subjects
     }
@@ -96,7 +119,7 @@ data "aws_iam_policy_document" "trust_terraform_plan" {
     condition {
       test     = "StringLike"
       variable = "${local.oidc_host}:sub"
-      values   = ["repo:${var.github_org}/${var.infra_repository}:*"]
+      values   = [local.plan_subject]
     }
   }
 }

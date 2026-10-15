@@ -4,39 +4,52 @@ As pipelines dos 5 serviços são **workflows reutilizáveis** que ficam neste r
 
 | Neste repositório | Chamado por (em cada serviço) | Papel |
 |---|---|---|
-| `.github/workflows/service-ci.yml` | `ci.yml` | build, testes, lint, SAST, SCA, imagem, ECR e deploy em develop |
-| `.github/workflows/service-promote.yml` | `promote.yml` | promoção por tag para staging e production |
-| `.github/workflows/git-release.yml` | `release.yml` (e o `release.yml` daqui) | botões: criar release e criar as tags de promoção |
+| `.github/workflows/service-ci.yml` | `ci.yml` | build, testes, lint, SAST, SCA, imagem, ECR e deploy em develop (botão) ou staging (release) |
+| `.github/workflows/service-promote.yml` | `promote.yml` | production no merge do PR release → main, com a mesma imagem de staging |
+| `.github/workflows/git-release.yml` | `release.yml` (e o `release.yml` daqui) | botão `criar-release` |
 | `.github/actions/gitops-set-image` | os dois primeiros | commit do `newTag` no repositório GitOps |
 
 Uma melhoria na pipeline, como trocar a versão do Trivy, é feita aqui uma vez e vale para os 5 serviços.
 
 ## Fluxo completo
 
+Três ambientes, um gatilho para cada:
+
+| Ambiente | Como chega lá | Imagem |
+|---|---|---|
+| **develop** | botão **Actions → ci → Run workflow**, escolhendo **qualquer branch** em "Use workflow from" | `dev-<branch>-<sha>` (construída a cada clique) |
+| **staging** | push em `release/vX.Y.Z`, ou seja, o merge de cada PR de feature no pacote | `vX.Y.Z-<sha>` (construída a cada push) |
+| **production** | merge do PR `release/vX.Y.Z` → `main`, com aprovação | a **mesma** `vX.Y.Z-<sha>` que está em staging, sem novo build |
+
 ```
+feature/x ──botão Run workflow──▶ ci.yml (branch feature/x)
+                                   ├─ build + testes (go test | pytest)
+                                   ├─ lint (golangci-lint | flake8)
+                                   ├─ SAST: SonarQube Cloud ── Quality Gate reprovado = FALHA
+                                   ├─ SCA: Snyk (ou Trivy fs) ─ vulnerabilidade CRÍTICA = FALHA
+                                   ├─ docker build → Trivy image ─ CRÍTICA ou segredo = FALHA
+                                   ├─ push ECR: togglemaster/<serviço>:dev-feature-x-<sha>
+                                   └─ GitOps: overlays/develop newTag ──▶ ArgoCD develop
+
 feature/x ──PR──▶ release/v1.2.0 ──push──▶ ci.yml
-                                            ├─ build + testes (go test | pytest)
-                                            ├─ lint (golangci-lint | flake8)
-                                            ├─ SAST: SonarQube Cloud ── Quality Gate reprovado = FALHA
-                                            ├─ SCA: Snyk (ou Trivy fs) ─ vulnerabilidade CRÍTICA = FALHA
-                                            ├─ docker build → Trivy image ─ CRÍTICA ou segredo = FALHA
+                                            ├─ as mesmas etapas acima
                                             ├─ push ECR: togglemaster/<serviço>:v1.2.0-<sha>
-                                            └─ GitOps: overlays/develop newTag ──▶ ArgoCD develop
+                                            └─ GitOps: overlays/staging newTag ──▶ ArgoCD staging
 
-botão promover-staging  ──▶ tag v1.2.0-rc.1 ──▶ promote.yml
-                                                 ├─ a tag está num commit da release/v1.2.0?
-                                                 ├─ a imagem v1.2.0-<sha> existe no ECR?
-                                                 ├─ re-scan com Trivy (CVE nova desde o build?)
-                                                 └─ GitOps: overlays/staging ──▶ ArgoCD staging
-
-botão promover-producao ──▶ tag v1.2.0 (mesmo commit do rc) ──▶ promote.yml
-                                                 ├─ validações acima + "esse commit foi rc?"
-                                                 ├─ aguarda aprovação (Environment production)
-                                                 ├─ GitOps: overlays/production ──▶ ArgoCD (janela de deploy)
-                                                 └─ abre PR release/v1.2.0 → main
+release/v1.2.0 ──PR + merge──▶ main ──▶ promote.yml
+                                         ├─ aguarda aprovação (Environment production)
+                                         ├─ a imagem v1.2.0-<sha> (último commit da release) existe no ECR?
+                                         ├─ é a mesma que está no overlay de staging?
+                                         ├─ re-scan com Trivy (CVE nova desde o build?)
+                                         ├─ GitOps: overlays/production ──▶ ArgoCD (janela de deploy)
+                                         └─ tag v1.2.0 no commit da main
 ```
 
-**A imagem é construída uma vez só**, no push da release. Staging e production recebem exatamente a mesma imagem que passou por develop.
+**A imagem de uma versão é construída uma vez só**, no push da release. Production recebe exatamente a imagem que está rodando em staging. O SHA vem do PR (o último commit da release), então o fluxo funciona com **Squash and merge**: o commit novo da main é outro, mas a imagem é a da release.
+
+**O develop é compartilhado.** Cada clique no botão substitui o que estava lá. Antes de subir a sua branch, combine com o time; o último commit `deploy(<serviço>): develop ...` no repositório GitOps mostra qual branch está no ambiente.
+
+**PR não publica nada.** PR para `release/*` ou para a `main` roda build, testes e todos os scans, e só.
 
 ## Ferramentas de segurança
 
@@ -88,9 +101,11 @@ Numa empresa, o equivalente mais robusto é um **GitHub App** da organização, 
 | Secret | `SONAR_TOKEN` | token do SonarQube Cloud |
 | Secret | `SNYK_TOKEN` | token do Snyk |
 | Secret | `CI_GITHUB_TOKEN` | o fine-grained token do passo 3 |
-| Variable | `AWS_ACCOUNT_ID` | número da conta AWS |
+| Variable | `AWS_ACCOUNT_ID` | número da conta AWS (12 dígitos; não é segredo) |
 | Variable | `SONAR_ORGANIZATION` | chave da organização no Sonar |
 | Variable | `SCA_TOOL` | opcional: `snyk` ou `trivy` |
+
+Na criação, a visibilidade **"Public repositories"** basta enquanto os repositórios forem públicos. Se algum virar privado, troque para *All repositories* ou *Selected repositories*, ou ele deixa de enxergar o valor.
 
 Se o plano da organização não permitir secrets de organização para repositórios públicos, cadastre os mesmos nomes em cada repositório.
 
@@ -98,8 +113,8 @@ Se o plano da organização não permitir secrets de organização para reposit�
 
 Em **cada repositório de serviço**:
 
-- **Settings → Environments → New environment** `production` → marque **Required reviewers** (você). O deploy em produção passa a esperar uma aprovação. `staging` é criado automaticamente na primeira promoção.
-- **Settings → Actions → General → Workflow permissions** → marque **Allow GitHub Actions to create and approve pull requests**, para o PR automático release → main depois de produção.
+- **Settings → Environments → New environment** `production` → marque **Required reviewers** (você). O deploy em produção passa a esperar uma aprovação. `develop` e `staging` são criados automaticamente no primeiro deploy.
+- Os três Environments também liberam a publicação no ECR: a role `togglemaster-gha-ecr-push` só confia em jobs que rodam dentro deles (o `sub` do token OIDC traz `environment:<nome>`). Um job fora deles, em qualquer branch, não recebe credencial da AWS.
 
 No `toggle-master-infra`, os Environments são `develop`, `staging` e `production` (ver `terraform/README.md`).
 
@@ -108,14 +123,25 @@ No `toggle-master-infra`, os Environments são `develop`, `staging` e `productio
 - `main`: só via PR, com os checks da pipeline passando.
 - tags `v*`: ninguém apaga nem move. Uma versão publicada é imutável, como a imagem no ECR.
 
+### 7. Primeira entrada dos workflows na `main` (uma vez por repositório)
+
+O fluxo normal é `feature/*` → `release/*` → `main`, mas os botões (**Run workflow** do `ci.yml` e o `release.yml`) só aparecem na aba **Actions** quando o workflow já está na branch padrão (o GitHub só lista workflows manuais da `main`). Por isso, na primeira vez, e também quando a própria estratégia da pipeline muda, cada repositório recebe os workflows por um **PR direto para a `main`**:
+
+1. `toggle-master-infra` primeiro: os serviços chamam os reutilizáveis em `@main`, então eles precisam estar lá antes de qualquer pipeline de serviço rodar. O plan desse PR falha no passo da AWS até o `global` ser aplicado; é esperado.
+2. Os 5 serviços depois, **só com os passos 1 a 5 feitos**. O PR já roda build, testes e scans, e falharia sem `SONAR_TOKEN`, `SNYK_TOKEN` e as variáveis.
+
+Use **Squash and merge** e mantenha a branch de origem. Daqui em diante, nenhuma mudança vai direto para a `main`.
+
 ## Uso no dia a dia
 
-1. **Abrir uma release:** Actions → **release** → Run workflow → `criar-release` (`minor` para funcionalidade nova, `patch` para correção).
-2. **Desenvolver:** branch `feature/...` ou `fix/...` a partir da release, e PR para `release/vX.Y.Z`. O PR roda os testes e os scans; o merge publica a imagem e sobe em develop.
-3. **Promover para staging:** botão `promover-staging`. Corrigiu algo na release? Rode de novo e saem `rc.2`, `rc.3`...
-4. **Promover para produção:** botão `promover-producao`. Aprove no Environment; o ArgoCD aplica dentro da janela de deploy.
+1. **Abrir uma release:** Actions → **release** → Run workflow → `minor` para funcionalidade nova, `patch` para correção, `major` para quebra de contrato. A `release/vX.Y.Z` nasce da `main`.
+2. **Desenvolver:** branch `feature/...` ou `fix/...` a partir da release.
+3. **Testar em develop:** Actions → **ci** → Run workflow → em "Use workflow from" escolha a sua branch. A esteira roda os testes e os scans e sobe a branch em develop.
+4. **Entrar no pacote (staging):** PR da feature para `release/vX.Y.Z`. O PR roda os testes e os scans; o merge publica `vX.Y.Z-<sha>` e sobe em staging.
+5. **Produção:** validado em staging, abra o PR `release/vX.Y.Z` → `main` e faça o merge (**Squash and merge**, mantendo a branch). Aprove no Environment `production`; o ArgoCD aplica dentro da janela de deploy, e a tag `vX.Y.Z` é criada na main.
 
-**Tirar uma demanda do pacote:** `git revert -m 1 <merge da demanda>` na release + novo `promover-staging`.
+**Tirar uma demanda do pacote:** `git revert <commit da demanda>` na release (com squash, a demanda é um commit só). O push sobe a release sem ela em staging.
+**Hotfix:** `criar-release` com `patch`, PR do `fix/...` para a release nova, valide em staging e faça o merge na main.
 **Rollback em produção:** `git revert` do commit `deploy(<serviço>): production ...` no repositório GitOps.
 
 ## Roteiro para o vídeo (pipeline falhando no passo de segurança)

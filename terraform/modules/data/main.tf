@@ -108,8 +108,11 @@ resource "aws_elasticache_subnet_group" "this" {
 }
 
 # replication_group (e não aws_elasticache_cluster) porque é o único que
-# suporta criptografia em repouso. Com num_cache_clusters = 1 é um nó único,
-# mesma pegada de custo, com caminho fácil para réplica depois.
+# suporta criptografia em repouso e réplicas. Com num_cache_clusters = 1 é um
+# nó único (develop e staging). Com 2 ou mais (production), a AWS põe o
+# primário e as réplicas em AZs diferentes e promove uma réplica sozinha se o
+# primário cair. O endpoint primário não muda: o evaluation-service não
+# precisa saber do failover.
 resource "aws_elasticache_replication_group" "this" {
   replication_group_id = "${var.name_prefix}-redis"
   description          = "${var.name_prefix} - cache do evaluation-service"
@@ -117,15 +120,15 @@ resource "aws_elasticache_replication_group" "this" {
   engine               = "redis"
   engine_version       = var.redis_engine_version
   node_type            = var.redis_node_type
-  num_cache_clusters   = 1
+  num_cache_clusters   = var.redis_num_cache_clusters
   parameter_group_name = "default.redis7"
   port                 = 6379
 
   subnet_group_name  = aws_elasticache_subnet_group.this.name
   security_group_ids = [aws_security_group.redis.id]
 
-  automatic_failover_enabled = false
-  multi_az_enabled           = false
+  automatic_failover_enabled = var.redis_num_cache_clusters > 1
+  multi_az_enabled           = var.redis_num_cache_clusters > 1
 
   at_rest_encryption_enabled = true
   kms_key_id                 = var.kms_key_arn

@@ -67,10 +67,16 @@ variable "redis_engine_version" {
   type = string
 }
 
+variable "redis_num_cache_clusters" {
+  description = "1 = nó único; 2+ = primário e réplicas em AZs diferentes, com failover automático."
+  type        = number
+  default     = 1
+}
+
 # --- DynamoDB ----------------------------------------------------------------
 
 variable "dynamodb_table_name" {
-  description = "Nome da tabela (o desafio exige ToggleMasterAnalytics). Tabelas são regionais, então o mesmo nome pode existir em cada ambiente."
+  description = "Nome da tabela (o desafio exige ToggleMasterAnalytics). Tabelas são regionais: ambientes na mesma região precisam de nomes diferentes."
   type        = string
 }
 

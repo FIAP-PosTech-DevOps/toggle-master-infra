@@ -5,7 +5,7 @@
 # tfvars e outro state:
 #
 #   ../tf.sh infra develop    plan   -> envs/develop.tfvars    (us-east-2)
-#   ../tf.sh infra staging    plan   -> envs/staging.tfvars    (us-west-2)
+#   ../tf.sh infra staging    plan   -> envs/staging.tfvars    (us-east-1)
 #   ../tf.sh infra production plan   -> envs/production.tfvars (us-east-1)
 # -----------------------------------------------------------------------------
 
@@ -62,8 +62,9 @@ module "data" {
   db_multi_az              = var.db_multi_az
   db_backup_retention_days = var.db_backup_retention_days
 
-  redis_node_type      = var.redis_node_type
-  redis_engine_version = var.redis_engine_version
+  redis_node_type          = var.redis_node_type
+  redis_engine_version     = var.redis_engine_version
+  redis_num_cache_clusters = var.redis_num_cache_clusters
 
   dynamodb_table_name             = var.dynamodb_table_name
   dynamodb_point_in_time_recovery = var.dynamodb_point_in_time_recovery
