@@ -208,6 +208,17 @@ variable "redis_engine_version" {
   default = "7.1"
 }
 
+variable "redis_num_cache_clusters" {
+  description = "Nós do Redis. 1 = nó único; 2 ou mais = primário + réplicas em AZs diferentes, com failover automático (production)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.redis_num_cache_clusters >= 1 && var.redis_num_cache_clusters <= 6
+    error_message = "redis_num_cache_clusters deve ficar entre 1 e 6."
+  }
+}
+
 # --- DynamoDB / SQS ----------------------------------------------------------
 
 variable "dynamodb_table_name" {

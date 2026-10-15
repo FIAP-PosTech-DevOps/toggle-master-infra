@@ -1,24 +1,25 @@
 # -----------------------------------------------------------------------------
 # Pipeline do Terraform
 # -----------------------------------------------------------------------------
-# Estratégia de branches (a mesma dos microsserviços): release branch + tags,
-# com a criação da release e as promoções feitas por botão (workflow manual).
+# Estratégia de ambientes (a mesma dos microsserviços):
 #
-#   feature/*, fix/*  --PR-->  release/vX.Y.Z  --push-->  apply em develop
-#   tag vX.Y.Z-rc.N   (no último commit da release)  -->  apply em staging
-#   tag vX.Y.Z        (no mesmo commit do rc aprovado) -->  apply em production
-#   release/vX.Y.Z    --PR-->  main  (depois de production; só plan)
+#   botão "Run workflow", qualquer branch  -->  develop (plan, apply ou destroy)
+#   feature/*, fix/*  --PR-->  release/vX.Y.Z  --push-->  apply em staging
+#   release/vX.Y.Z    --PR + merge-->  main     -->  apply em production
+#                                                   (aprovação no Environment)
 #
-# A main só recebe o que já foi para produção. Cancelar um pacote = abandonar
-# a release, sem desfazer nada na main.
+# A main é o que está em produção. Cancelar um pacote = abandonar a release,
+# sem desfazer nada na main. O develop é compartilhado: vale o último apply.
 #
 # Branches só disparam quando algo em terraform/ (ou este arquivo) muda: um
-# commit de documentação não gera plan nem apply. Tags sempre disparam (o
-# GitHub não avalia filtro de paths em push de tag).
+# commit de documentação não gera plan nem apply.
 #
 #   Pull request -> validação estática + plan do ambiente de destino
-#   Push/tag     -> validação + plan + apply no ambiente correspondente
-#   Manual       -> plan, apply ou destroy de qualquer ambiente
+#                   (PR para release/* = staging; PR para a main = production)
+#   Push         -> validação + plan + apply (release/* = staging; main = production)
+#   Manual       -> plan, apply ou destroy. apply em staging só a partir de
+#                   uma release/*, e em production só a partir da main;
+#                   destroy de qualquer ambiente a partir de qualquer branch.
 #
 # Pré-requisitos (uma vez, ver terraform/README.md):
 #   - stacks bootstrap e global aplicados localmente
@@ -35,8 +36,7 @@ on:
       - "terraform/**"
       - ".github/workflows/terraform.yml"
   push:
-    branches: ["release/**"]
-    tags: ["v*"]
+    branches: ["release/**", main]
     paths:
       - "terraform/**"
       - ".github/workflows/terraform.yml"
@@ -76,41 +76,54 @@ jobs:
     steps:
       - id: env
         shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          BASE_REF: ${{ github.base_ref }}
+          CREATED: ${{ github.event.created }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_ACTION: ${{ inputs.action }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            ENVIRONMENT="${{ inputs.environment }}"
-            ACTION="${{ inputs.action }}"
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          die() { echo "::error::$*"; exit 1; }
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            ENVIRONMENT="$INPUT_ENVIRONMENT"
+            ACTION="$INPUT_ACTION"
+            # develop aceita qualquer branch. staging e production só recebem
+            # apply do código que passou pelo fluxo (release e main).
+            if [[ "$ACTION" == "apply" ]]; then
+              case "$ENVIRONMENT" in
+                staging)    [[ "$REF_NAME" =~ ^release/v ]] || die "apply em staging só a partir de uma release/* (escolhida: $REF_NAME)" ;;
+                production) [[ "$REF_NAME" == "main" ]]    || die "apply em production só a partir da main (escolhida: $REF_NAME)" ;;
+              esac
+            fi
+          elif [[ "$EVENT" == "pull_request" ]]; then
             # Em PR vale a branch de DESTINO, e só roda plan.
             ACTION=plan
-            case "${{ github.base_ref }}" in
-              release/*) ENVIRONMENT=develop ;;
-              main)      ENVIRONMENT=production ;;  # confere que prod não tem drift
-              *) echo "PR para branch sem ambiente: ${{ github.base_ref }}"; exit 1 ;;
+            case "$BASE_REF" in
+              release/*) ENVIRONMENT=staging ;;
+              main)      ENVIRONMENT=production ;;
+              *) die "PR para branch sem ambiente: $BASE_REF" ;;
             esac
-          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+          elif [[ "$REF_NAME" == "main" ]]; then
+            # Merge do PR release -> main: a versão vai para produção.
             ACTION=apply
-            TAG="${{ github.ref_name }}"
-            if   [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then ENVIRONMENT=staging
-            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]];               then ENVIRONMENT=production
-            else echo "tag fora do padrão vX.Y.Z ou vX.Y.Z-rc.N: $TAG"; exit 1
-            fi
-          elif [[ "${{ github.event.created }}" == "true" ]]; then
+            ENVIRONMENT=production
+          elif [[ "$CREATED" == "true" ]]; then
             # Branch release/* recém-criada pelo botão criar-release: ela é
-            # uma cópia da main, então não há nada novo para aplicar. Sem
-            # este caso, criar a release subiria o develop com o código da
-            # main antes de qualquer demanda entrar no pacote.
+            # uma cópia da main (= produção), então não há nada novo para
+            # aplicar. Sem este caso, criar a release subiria o staging antes
+            # de qualquer demanda entrar no pacote.
             ACTION=none
-            ENVIRONMENT=develop
+            ENVIRONMENT=staging
             echo "release criada a partir da main: nada a aplicar" >> "$GITHUB_STEP_SUMMARY"
           else
             # push em release/* (merge de um PR no pacote)
             ACTION=apply
-            ENVIRONMENT=develop
+            ENVIRONMENT=staging
           fi
           echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
           echo "action=$ACTION" >> "$GITHUB_OUTPUT"
-          echo "### Ambiente: \`$ENVIRONMENT\` · ação: \`$ACTION\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Ambiente: \`$ENVIRONMENT\` · ação: \`$ACTION\` · branch: \`$REF_NAME\`" >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # Validação estática: não precisa de credencial AWS
@@ -214,6 +227,9 @@ jobs:
     # O environment é o que libera a role de apply (trust policy) e é onde o
     # GitHub aplica a regra de aprovação manual de production.
     environment: ${{ needs.resolve.outputs.environment }}
+    permissions:
+      contents: write # tag vX.Y.Z na main depois do apply em production
+      id-token: write
     concurrency:
       group: terraform-${{ needs.resolve.outputs.environment }}
       cancel-in-progress: false
@@ -245,6 +261,29 @@ jobs:
       # sensível vai para o log (root token e chaves ficam no Secrets Manager).
       - name: openbao-bootstrap
         run: ./scripts/openbao-bootstrap.sh "$ENVIRONMENT"
+
+      # Merge release/vX.Y.Z -> main aplicado em produção: marca a versão na
+      # main. A versão vem do PR que gerou o commit (funciona com squash).
+      - name: tag vX.Y.Z na main
+        if: env.ENVIRONMENT == 'production' && github.event_name == 'push' && github.ref_name == 'main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          HEAD_REF="$(gh api "repos/${REPO}/commits/${SHA}/pulls" --jq '[.[] | select(.base.ref == "main")][0].head.ref // ""')"
+          if [[ ! "$HEAD_REF" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::notice::commit da main não veio de um PR de release (${HEAD_REF:-sem PR}); sem tag"
+            exit 0
+          fi
+          TAG="v${BASH_REMATCH[1]}"
+          if gh api "repos/${REPO}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::notice::a tag ${TAG} já existe"
+          else
+            gh api "repos/${REPO}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$SHA" >/dev/null
+            echo "- tag \`${TAG}\` criada em \`${SHA:0:7}\` (main)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # ---------------------------------------------------------------------------
   # Destroy (manual) — desliga o ambiente ao fim da sessão para não pagar
@@ -281,6 +320,45 @@ jobs:
           VPC_ID="$(./terraform/tf.sh infra "$ENVIRONMENT" output -raw vpc_id 2>/dev/null || true)"
           echo "ENV_REGION=$REGION" >> "$GITHUB_ENV"
           echo "VPC_ID=$VPC_ID" >> "$GITHUB_ENV"
+
+      # Antes de remover os addons, esvazia o que o ArgoCD criou e que tem
+      # "finalizer" de um operador. O caso real: o ScaledObject do
+      # analytics-service tem a trava do KEDA. Se o KEDA sair antes dele, ninguém
+      # solta a trava, o CRD fica preso em Terminating e o `helm uninstall`
+      # do KEDA estoura o tempo ("context deadline exceeded").
+      - name: esvaziar o cluster (ArgoCD e objetos do KEDA)
+        shell: bash
+        run: |
+          CLUSTER="togglemaster-$ENVIRONMENT-cluster"
+          if ! aws eks describe-cluster --region "$ENV_REGION" --name "$CLUSTER" >/dev/null 2>&1; then
+            echo "cluster $CLUSTER não existe: nada a esvaziar"
+            exit 0
+          fi
+          aws eks update-kubeconfig --region "$ENV_REGION" --name "$CLUSTER" >/dev/null
+
+          # 1. O ArgoCD para de reconciliar; senão recria o que for apagado.
+          kubectl -n argocd scale statefulset argocd-application-controller --replicas=0 2>/dev/null \
+            || echo "ArgoCD não encontrado"
+
+          # 2. Apaga os objetos do KEDA com o operador ainda vivo: ele mesmo
+          #    solta a trava e o objeto sai normalmente.
+          KEDA_TYPES=(scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh)
+          for r in "${KEDA_TYPES[@]}"; do
+            kubectl get crd "$r" >/dev/null 2>&1 || continue
+            kubectl delete "$r" --all -A --wait=true --timeout=120s || true
+          done
+
+          # 3. Se algum ficou preso (operador fora do ar), solta a trava à força.
+          for r in "${KEDA_TYPES[@]}"; do
+            kubectl get crd "$r" >/dev/null 2>&1 || continue
+            kubectl get "$r" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+              | while read -r ns name; do
+                  [[ -n "$name" ]] || continue
+                  echo "removendo o finalizer de $r $ns/$name"
+                  kubectl -n "$ns" patch "$r" "$name" --type merge -p '{"metadata":{"finalizers":null}}'
+                done
+          done
+          echo "cluster esvaziado"
 
       # Ordem inversa da criação: primeiro o que roda dentro do cluster (o
       # NLB do ingress e os volumes EBS precisam sair antes da VPC).

@@ -6,7 +6,7 @@
 #   apps/<serviço>/overlays/<ambiente>/kustomization.yaml
 # e o ArgoCD do ambiente sincroniza sozinho.
 #
-# Usado pela pipeline de CI (develop) e pela de promoção (staging/production).
+# Usado pela pipeline de CI (develop e staging) e pela de promoção (production).
 # -----------------------------------------------------------------------------
 name: gitops-set-image
 description: Altera o newTag de um serviço num overlay do repositório GitOps e faz push
@@ -19,7 +19,7 @@ inputs:
     description: develop | staging | production
     required: true
   image-tag:
-    description: Tag da imagem no ECR (vX.Y.Z-<sha>)
+    description: Tag da imagem no ECR (dev-<branch>-<sha> em develop, vX.Y.Z-<sha> em staging e production)
     required: true
   repository:
     description: Repositório GitOps (owner/nome)

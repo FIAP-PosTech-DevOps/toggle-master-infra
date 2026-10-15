@@ -9,14 +9,23 @@
 #   2. Lint                 golangci-lint | flake8
 #   3. SAST                 SonarQube Cloud (Quality Gate)
 #   4. SCA                  Snyk (padrão) ou Trivy fs — variável SCA_TOOL
-#   5. Imagem               docker build -> Trivy (CRÍTICA = reprova) -> ECR
-#   6. Deploy em develop    commit do newTag no repositório GitOps (ArgoCD aplica)
+#   5. Imagem               docker build -> Trivy (CRÍTICA = reprova)
+#   6. Publicar e implantar push no ECR + commit do newTag no repositório
+#                           GitOps (o ArgoCD do ambiente aplica)
 #
-# Pull request: roda 1 a 5 sem publicar nada. Push em release/vX.Y.Z: roda
-# tudo, publica vX.Y.Z-<sha> no ECR e implanta em develop.
+# Qual evento vai para qual ambiente:
+#
+#   pull_request                    1 a 5, sem publicar nada
+#   botão (workflow_dispatch) com   tudo -> develop, imagem dev-<branch>-<sha>
+#     qualquer branch escolhida       (o develop é compartilhado: vale o último)
+#   push em release/vX.Y.Z          tudo -> staging, imagem vX.Y.Z-<sha>
+#
+# Production não passa por aqui: o merge do PR release -> main promove a
+# MESMA imagem que está em staging (service-promote.yml), sem novo build.
 #
 # Regra de bloqueio: vulnerabilidade CRÍTICA (dependência ou imagem) ou
-# Quality Gate reprovado interrompem a pipeline; nada chega ao ECR.
+# Quality Gate reprovado interrompem a pipeline; nada chega ao ECR nem a
+# nenhum ambiente.
 # -----------------------------------------------------------------------------
 name: service-ci
 
@@ -73,6 +82,7 @@ jobs:
     permissions: {}
     outputs:
       publish: ${{ steps.ctx.outputs.publish }}
+      environment: ${{ steps.ctx.outputs.environment }}
       version: ${{ steps.ctx.outputs.version }}
       image-tag: ${{ steps.ctx.outputs.image-tag }}
     steps:
@@ -90,25 +100,43 @@ jobs:
           [[ "$SCA_TOOL" == "snyk" || "$SCA_TOOL" == "trivy" ]] \
             || { echo "::error::SCA_TOOL deve ser snyk ou trivy (recebido: $SCA_TOOL)"; exit 1; }
 
-          # Só um push numa release/vX.Y.Z publica imagem e implanta em develop.
-          if [[ "$EVENT" == "push" && "$REF_NAME" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            # Botão "Run workflow": a branch escolhida em "Use workflow from"
+            # vai para develop. A tag leva o nome da branch para o time saber,
+            # pelo ArgoCD ou pelo GitOps, o que está no ambiente compartilhado.
+            SLUG="$(tr '[:upper:]' '[:lower:]' <<< "$REF_NAME" | sed -E 's#[^a-z0-9._-]+#-#g; s#^[-.]+##' | cut -c1-40 | sed -E 's#[-.]+$##')"
+            ENVIRONMENT=develop
+            VERSION="dev-${SLUG}"
+            IMAGE_TAG="dev-${SLUG}-${SHA:0:7}"
+            PUBLISH=true
+          elif [[ "$EVENT" == "push" && "$REF_NAME" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            # Cada merge na release (o pacote da próxima versão) sobe em staging.
+            ENVIRONMENT=staging
             VERSION="${BASH_REMATCH[1]}"
+            IMAGE_TAG="v${VERSION}-${SHA:0:7}"
             PUBLISH=true
           else
-            VERSION="0.0.0-ci"
+            # Pull request: valida tudo, não publica.
+            ENVIRONMENT=""
+            VERSION="ci"
+            IMAGE_TAG="ci-${SHA:0:7}"
             PUBLISH=false
           fi
-          IMAGE_TAG="v${VERSION}-${SHA:0:7}"
 
           {
             echo "publish=$PUBLISH"
+            echo "environment=$ENVIRONMENT"
             echo "version=$VERSION"
             echo "image-tag=$IMAGE_TAG"
           } >> "$GITHUB_OUTPUT"
           {
-            echo "### ${{ inputs.service-name }}"
+            echo "### ${{ inputs.service-name }} (\`$REF_NAME\`)"
             echo "- imagem: \`$IMAGE_TAG\`"
-            echo "- publica no ECR e implanta em develop: **$PUBLISH**"
+            if [[ "$PUBLISH" == "true" ]]; then
+              echo "- publica no ECR e implanta em **$ENVIRONMENT**"
+            else
+              echo "- só validação: nada é publicado"
+            fi
             echo "- SCA: **$SCA_TOOL**"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -313,7 +341,7 @@ jobs:
           category: sca-${{ inputs.sca-tool }}
 
   # ---------------------------------------------------------------------------
-  # 5. Imagem: build -> Trivy (quarentena) -> push no ECR
+  # 5. Imagem: build -> Trivy (quarentena)
   # ---------------------------------------------------------------------------
   image:
     name: Imagem (Trivy + ECR)
@@ -321,7 +349,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # OIDC com a AWS (role togglemaster-gha-ecr-push)
       security-events: write
     env:
       IMAGE: ${{ inputs.aws-account-id }}.dkr.ecr.${{ inputs.ecr-region }}.amazonaws.com/togglemaster/${{ inputs.service-name }}
@@ -371,19 +398,66 @@ jobs:
           sarif_file: trivy-image.sarif
           category: container-image
 
-      - name: Credenciais AWS (OIDC)
+      # A imagem aprovada segue para o job de publicação como artefato: o
+      # binário que vai para o ECR é exatamente o que o Trivy escaneou.
+      - name: Salvar a imagem para a publicação
         if: needs.context.outputs.publish == 'true'
+        run: docker save "${IMAGE}:${IMAGE_TAG}" | gzip -1 > image.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        if: needs.context.outputs.publish == 'true'
+        with:
+          name: image
+          path: image.tar.gz
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 6. Publicar no ECR e implantar (GitOps) — develop ou staging
+  # ---------------------------------------------------------------------------
+  # O `environment:` faz duas coisas: registra o deploy na aba Environments do
+  # repositório e entra no token OIDC. A role da AWS que publica no ECR só
+  # confia em jobs dos Environments develop, staging e production; uma branch
+  # qualquer, fora deste job, não consegue publicar imagem.
+  publish:
+    name: Publicar e implantar — ${{ needs.context.outputs.environment }}
+    needs: [context, image]
+    if: needs.context.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.context.outputs.environment }}
+    permissions:
+      contents: read
+      id-token: write # OIDC com a AWS (role togglemaster-gha-ecr-push)
+    concurrency:
+      group: gitops-${{ inputs.service-name }}-${{ needs.context.outputs.environment }}
+      cancel-in-progress: false
+    env:
+      IMAGE: ${{ inputs.aws-account-id }}.dkr.ecr.${{ inputs.ecr-region }}.amazonaws.com/togglemaster/${{ inputs.service-name }}
+      IMAGE_TAG: ${{ needs.context.outputs.image-tag }}
+    steps:
+      - name: Conferir CI_GITHUB_TOKEN
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.CI_GITHUB_TOKEN }}
+        run: |
+          [[ -n "$TOKEN" ]] || { echo "::error::secret CI_GITHUB_TOKEN não configurado (escrita no repositório GitOps)"; exit 1; }
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: image
+
+      - name: Carregar a imagem escaneada
+        run: gunzip -c image.tar.gz | docker load
+
+      - name: Credenciais AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/togglemaster-gha-ecr-push
           aws-region: ${{ inputs.ecr-region }}
 
       - name: Login no ECR
-        if: needs.context.outputs.publish == 'true'
         uses: aws-actions/amazon-ecr-login@v2.1.7
 
       - name: docker push
-        if: needs.context.outputs.publish == 'true'
         shell: bash
         env:
           REPOSITORY: togglemaster/${{ inputs.service-name }}
@@ -399,14 +473,23 @@ jobs:
           fi
           echo "- publicada: \`${IMAGE}:${IMAGE_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
 
+      - uses: FIAP-PosTech-DevOps/toggle-master-infra/.github/actions/gitops-set-image@main
+        with:
+          service: ${{ inputs.service-name }}
+          environment: ${{ needs.context.outputs.environment }}
+          image-tag: ${{ needs.context.outputs.image-tag }}
+          repository: ${{ inputs.gitops-repository }}
+          token: ${{ secrets.CI_GITHUB_TOKEN }}
+
   # ---------------------------------------------------------------------------
-  # Snyk monitor: guarda as dependências da versão publicada e avisa por
-  # e-mail se aparecer uma CVE nova depois. Não bloqueia.
+  # Snyk monitor: guarda as dependências de cada versão de release e avisa
+  # por e-mail se aparecer uma CVE nova depois. Não bloqueia. Builds de
+  # develop (branches de feature) não entram, para não poluir o painel.
   # ---------------------------------------------------------------------------
   sca-monitor:
     name: Snyk monitor
-    needs: [context, image]
-    if: needs.context.outputs.publish == 'true' && inputs.sca-tool == 'snyk'
+    needs: [context, publish]
+    if: needs.context.outputs.environment == 'staging' && inputs.sca-tool == 'snyk'
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
@@ -439,31 +522,3 @@ jobs:
           ARGS=(--project-name="${{ inputs.service-name }}" --target-reference="v${VERSION}")
           [[ "$LANGUAGE" == "python" ]] && ARGS+=(--file=requirements.txt --package-manager=pip)
           snyk monitor "${ARGS[@]}"
-
-  # ---------------------------------------------------------------------------
-  # 6. Deploy em develop (GitOps)
-  # ---------------------------------------------------------------------------
-  deploy-develop:
-    name: GitOps — develop
-    needs: [context, image]
-    if: needs.context.outputs.publish == 'true'
-    runs-on: ubuntu-latest
-    permissions: {}
-    concurrency:
-      group: gitops-${{ inputs.service-name }}-develop
-      cancel-in-progress: false
-    steps:
-      - name: Conferir CI_GITHUB_TOKEN
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.CI_GITHUB_TOKEN }}
-        run: |
-          [[ -n "$TOKEN" ]] || { echo "::error::secret CI_GITHUB_TOKEN não configurado (escrita no repositório GitOps)"; exit 1; }
-
-      - uses: FIAP-PosTech-DevOps/toggle-master-infra/.github/actions/gitops-set-image@main
-        with:
-          service: ${{ inputs.service-name }}
-          environment: develop
-          image-tag: ${{ needs.context.outputs.image-tag }}
-          repository: ${{ inputs.gitops-repository }}
-          token: ${{ secrets.CI_GITHUB_TOKEN }}

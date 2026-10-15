@@ -83,17 +83,16 @@ variable "infra_repository" {
   default     = "toggle-master-infra"
 }
 
-variable "ci_push_refs" {
+variable "ci_push_environments" {
   description = <<-EOT
-    Refs Git dos serviços que podem publicar imagem no ECR (padrão
-    StringLike). Estratégia de branches do projeto: as demandas entram por PR
-    numa release/vX.Y.Z; cada push na release gera imagem e sobe em develop.
-    As tags vX.Y.Z-rc.N (staging) e vX.Y.Z (production) só promovem a imagem
-    já publicada, mas também podem consultar o ECR. PRs e feature/* rodam a
-    pipeline sem publicar nada.
+    GitHub Environments dos repositórios de serviço que podem assumir a role
+    de publicação no ECR. Só os jobs de deploy declaram `environment:`:
+    develop (botão com qualquer branch), staging (push em release/*) e
+    production (merge release -> main, que só confere e re-escaneia a imagem).
+    PRs e qualquer outro job rodam sem credencial da AWS.
   EOT
   type        = list(string)
-  default     = ["refs/heads/release/*", "refs/tags/v*"]
+  default     = ["develop", "staging", "production"]
 }
 
 variable "deploy_environments" {

@@ -7,6 +7,9 @@
 # Rebuild por ambiente geraria binários diferentes para o que deveria ser a
 # mesma versão.
 #
+# Tags: dev-<branch>-<sha> (develop, descartáveis, expiram em 14 dias) e
+# vX.Y.Z-<sha> (releases: staging e production usam a mesma).
+#
 # Os clusters em outras regiões puxam daqui (cross-region). O custo de
 # transferência é de centavos para o volume deste projeto.
 # -----------------------------------------------------------------------------
@@ -76,6 +79,18 @@ resource "aws_ecr_lifecycle_policy" "services" {
     rules = [
       {
         rulePriority = 1
+        description  = "Expirar imagens de develop (dev-<branch>-<sha>) apos 14 dias"
+        selection = {
+          tagStatus      = "tagged"
+          tagPatternList = ["dev-*"]
+          countType      = "sinceImagePushed"
+          countUnit      = "days"
+          countNumber    = 14
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
         description  = "Expirar imagens sem tag apos 14 dias"
         selection = {
           tagStatus   = "untagged"
@@ -86,11 +101,11 @@ resource "aws_ecr_lifecycle_policy" "services" {
         action = { type = "expire" }
       },
       {
-        rulePriority = 2
-        description  = "Manter apenas as ${var.ecr_keep_tagged_images} imagens com tag mais recentes"
+        rulePriority = 3
+        description  = "Manter apenas as ${var.ecr_keep_tagged_images} imagens de release (v*) mais recentes"
         selection = {
           tagStatus      = "tagged"
-          tagPatternList = ["*"]
+          tagPatternList = ["v*"]
           countType      = "imageCountMoreThan"
           countNumber    = var.ecr_keep_tagged_images
         }

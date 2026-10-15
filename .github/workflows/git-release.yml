@@ -1,20 +1,21 @@
 # -----------------------------------------------------------------------------
-# Botões de release (workflow reutilizável)
+# Botão "criar-release" (workflow reutilizável)
 # -----------------------------------------------------------------------------
 # Cada repositório (5 serviços + toggle-master-infra) tem um release.yml com
-# `workflow_dispatch` — os "botões" da aba Actions — que chama este arquivo.
+# `workflow_dispatch` — o botão da aba Actions — que chama este arquivo.
 #
-#   criar-release      cria release/vX.Y.Z a partir da main (patch/minor/major)
-#   promover-staging   cria vX.Y.Z-rc.N no último commit da release
-#   promover-producao  cria vX.Y.Z no commit do último rc (o que foi testado)
+#   criar-release   cria release/vX.Y.Z a partir da main (patch/minor/major)
 #
-# Este workflow só mexe no Git. Quem age é o push resultante:
-#   branch release/*  ->  ci.yml (build, scans, ECR, develop)
-#   tag -rc / final   ->  promote.yml (serviços) | terraform.yml (infra)
+# Este workflow só mexe no Git. O resto do fluxo é feito por PR e merge:
 #
-# Por isso o push usa o secret CI_GITHUB_TOKEN, e não o GITHUB_TOKEN: eventos
-# criados com o GITHUB_TOKEN não disparam outros workflows (proteção do
-# GitHub contra loops), e a promoção nunca aconteceria.
+#   feature/* --(botão "Run workflow" do ci)--> develop
+#   feature/* --PR--> release/vX.Y.Z --push--> staging
+#   release/vX.Y.Z --PR + merge--> main --> production (com aprovação)
+#                                           + tag vX.Y.Z na main
+#
+# O push da branch nova usa o secret CI_GITHUB_TOKEN, e não o GITHUB_TOKEN:
+# eventos criados com o GITHUB_TOKEN não disparam outros workflows (proteção
+# do GitHub contra loops).
 # -----------------------------------------------------------------------------
 name: git-release
 
@@ -22,17 +23,13 @@ on:
   workflow_call:
     inputs:
       action:
-        description: criar-release | promover-staging | promover-producao
+        description: criar-release (única ação; o resto do fluxo é por PR)
         type: string
-        required: true
+        default: criar-release
       bump:
-        description: patch | minor | major (só para criar-release)
+        description: patch | minor | major
         type: string
         default: patch
-      release:
-        description: "Branch da release (ex.: release/v1.2.0). Vazio = a mais recente."
-        type: string
-        default: ""
 
 # Nada por padrão; cada job pede só o que usa.
 permissions: {}
@@ -61,7 +58,6 @@ jobs:
         env:
           ACTION: ${{ inputs.action }}
           BUMP: ${{ inputs.bump }}
-          RELEASE_INPUT: ${{ inputs.release }}
           ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
@@ -71,18 +67,6 @@ jobs:
           die() { echo "::error::$*" >&2; exit 1; }
 
           SEMVER='[0-9]+\.[0-9]+\.[0-9]+'
-
-          # Release em andamento: a informada, ou a de maior versão.
-          current_release() {
-            if [[ -n "$RELEASE_INPUT" ]]; then
-              git show-ref --verify --quiet "refs/remotes/origin/${RELEASE_INPUT}" \
-                || die "branch ${RELEASE_INPUT} não existe"
-              echo "$RELEASE_INPUT"
-            else
-              git branch -r --format='%(refname:short)' \
-                | grep -oE "release/v${SEMVER}$" | sort -V | tail -1 || true
-            fi
-          }
 
           case "$ACTION" in
             # -----------------------------------------------------------------
@@ -101,53 +85,10 @@ jobs:
               BRANCH="release/v${NEXT}"
               git push origin "origin/main:refs/heads/${BRANCH}"
               summary "### Release criada: \`${BRANCH}\` (a partir da main, base ${BASE}, ${BUMP})"
-              summary "Próximos passos: PRs de feature/* e fix/* para \`${BRANCH}\`. Cada push nela vai para develop."
-              ;;
-
-            # -----------------------------------------------------------------
-            promover-staging)
-              BRANCH="$(current_release)"
-              [[ -n "$BRANCH" ]] || die "nenhuma release aberta. Use criar-release primeiro."
-              VERSION="${BRANCH#release/v}"
-              git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null \
-                && die "v${VERSION} já foi para produção; crie uma nova release"
-
-              COMMIT="$(git rev-parse "origin/${BRANCH}")"
-              EXISTING="$(git tag --points-at "$COMMIT" | grep -E "^v${VERSION}-rc\.[0-9]+$" || true)"
-              [[ -z "$EXISTING" ]] || die "o último commit de ${BRANCH} já é ${EXISTING}. Faça um novo commit na release ou promova para produção."
-
-              LAST_RC="$(git tag -l "v${VERSION}-rc.*" | sed -E 's/.*-rc\.//' | sort -n | tail -1 || true)"
-              TAG="v${VERSION}-rc.$(( ${LAST_RC:-0} + 1 ))"
-              git tag -a "$TAG" "$COMMIT" -m "${TAG}: candidata para staging (por ${ACTOR})"
-              git push origin "refs/tags/${TAG}"
-              summary "### \`${TAG}\` criada em ${BRANCH} (${COMMIT:0:7}) → staging"
-              ;;
-
-            # -----------------------------------------------------------------
-            promover-producao)
-              BRANCH="$(current_release)"
-              [[ -n "$BRANCH" ]] || die "nenhuma release aberta."
-              VERSION="${BRANCH#release/v}"
-              git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null \
-                && die "v${VERSION} já existe"
-
-              RC="$(git tag -l "v${VERSION}-rc.*" | sort -V | tail -1 || true)"
-              [[ -n "$RC" ]] || die "nenhum rc de v${VERSION}. Promova para staging antes."
-              COMMIT="$(git rev-list -n 1 "$RC")"
-
-              # Vai para produção exatamente o que foi validado em staging.
-              HEAD_COMMIT="$(git rev-parse "origin/${BRANCH}")"
-              if [[ "$HEAD_COMMIT" != "$COMMIT" ]]; then
-                echo "::warning::${BRANCH} tem commits depois de ${RC}; eles NÃO vão para produção nesta versão."
-              fi
-
-              TAG="v${VERSION}"
-              git tag -a "$TAG" "$COMMIT" -m "${TAG}: produção, a partir de ${RC} (por ${ACTOR})"
-              git push origin "refs/tags/${TAG}"
-              summary "### \`${TAG}\` criada no commit de \`${RC}\` (${COMMIT:0:7}) → production"
+              summary "Próximos passos: PRs de feature/* e fix/* para \`${BRANCH}\` (cada merge sobe em staging). Validado em staging, abra o PR \`${BRANCH}\` → main: o merge leva a versão para produção."
               ;;
 
             *)
-              die "ação desconhecida: $ACTION"
+              die "ação desconhecida: $ACTION (só existe criar-release)"
               ;;
           esac

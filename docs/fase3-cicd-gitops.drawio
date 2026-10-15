@@ -88,7 +88,7 @@
         <mxCell id="st4" value="&lt;b&gt;4. Docker Build&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;+ Trivy image&lt;br&gt;(container scan)&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#FEE2E2;strokeColor=#B91C1C;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
           <mxGeometry x="456" y="50" width="128" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="st5" value="&lt;b&gt;5. Push ECR&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;login OIDC&lt;br&gt;tag vX.Y.Z-&amp;lt;sha&amp;gt;&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
+        <mxCell id="st5" value="&lt;b&gt;5. Push ECR&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;OIDC (Environment)&lt;br&gt;dev-… · vX.Y.Z-&amp;lt;sha&amp;gt;&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
           <mxGeometry x="602" y="50" width="128" height="100" as="geometry" />
         </mxCell>
         <mxCell id="st6" value="&lt;b&gt;6. Atualiza tag&lt;/b&gt;&lt;br&gt;&lt;font color='#475569'&gt;commit no repo&lt;br&gt;GitOps&lt;/font&gt;" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="ci_g">
@@ -100,7 +100,7 @@
         <mxCell id="fail" value="&lt;b&gt;Pipeline falha&lt;/b&gt;&lt;br&gt;sem push · sem deploy" style="rounded=1;arcSize=8;fillColor=#B91C1C;strokeColor=#7F1D1D;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;fontColor=#FFFFFF;" vertex="1" parent="ci_g">
           <mxGeometry x="100" y="188" width="170" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="ci_note" value="Gatilho: PR para &lt;i&gt;release/*&lt;/i&gt; roda até o passo 4 (sem push/deploy); push em &lt;i&gt;release/vX.Y.Z&lt;/i&gt; roda tudo e sobe em develop. Tags &lt;i&gt;-rc.N&lt;/i&gt;/final só promovem a mesma imagem (com re-scan do Trivy). Cada serviço dispara só a própria pipeline. Depois do push, o Snyk monitor acompanha CVEs novas." style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="ci_g">
+        <mxCell id="ci_note" value="Gatilhos: PR roda até o passo 4 (sem push/deploy) · botão &lt;i&gt;Run workflow&lt;/i&gt; com qualquer branch → develop · push em &lt;i&gt;release/vX.Y.Z&lt;/i&gt; → staging · merge &lt;i&gt;release → main&lt;/i&gt; promove a mesma imagem de staging para production (re-scan do Trivy + aprovação, sem novo build). Cada serviço dispara só a própria pipeline." style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="ci_g">
           <mxGeometry x="20" y="272" width="600" height="58" as="geometry" />
         </mxCell>
         <mxCell id="go_g" value="toggle-master-gitops (GitHub) — estado desejado do cluster" style="rounded=1;arcSize=3;fillColor=#ECFDF5;strokeColor=#047857;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=4;container=1;collapsible=0;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
@@ -121,7 +121,7 @@
         <mxCell id="tf_env" value="&lt;b&gt;bootstrap&lt;/b&gt; · &lt;b&gt;global&lt;/b&gt; (1x por conta: state, ECR, OIDC)&lt;br&gt;&lt;b&gt;infra/envs/*.tfvars&lt;/b&gt;: uma região por ambiente" style="rounded=1;arcSize=8;fillColor=#EDE9FE;strokeColor=#7B42BC;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
           <mxGeometry x="16" y="94" width="338" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="tf_wf" value="&lt;b&gt;terraform.yml&lt;/b&gt; (paths: terraform/**)&lt;br&gt;PR: fmt · validate · tflint · checkov · plan&lt;br&gt;release/* → develop · tag rc → staging · tag → prod" style="rounded=1;arcSize=8;fillColor=#EDE9FE;strokeColor=#7B42BC;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
+        <mxCell id="tf_wf" value="&lt;b&gt;terraform.yml&lt;/b&gt; (paths: terraform/**)&lt;br&gt;PR: fmt · validate · tflint · checkov · plan&lt;br&gt;botão → develop · release/* → staging · main → prod" style="rounded=1;arcSize=8;fillColor=#EDE9FE;strokeColor=#7B42BC;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
           <mxGeometry x="16" y="154" width="338" height="66" as="geometry" />
         </mxCell>
         <mxCell id="tf_argo" value="&lt;b&gt;cluster-addons&lt;/b&gt; (Helm) · ArgoCD · OpenBao · ESO&lt;br&gt;KEDA · ingress-nginx · ALB controller" style="rounded=1;arcSize=8;fillColor=#EDE9FE;strokeColor=#7B42BC;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=left;spacingLeft=8;" vertex="1" parent="tf_g">
@@ -142,7 +142,7 @@
         <mxCell id="s3" value="&lt;b&gt;S3 · tfstate&lt;/b&gt;&lt;br&gt;versionado&lt;br&gt;+ use_lockfile" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;fillColor=#7AA116;resIcon=mxgraph.aws4.s3;" vertex="1" parent="aws">
           <mxGeometry x="66" y="314" width="56" height="56" as="geometry" />
         </mxCell>
-        <mxCell id="region" value="Região do ambiente — develop · staging · production (uma cópia por região)" style="sketch=0;outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;verticalAlign=top;align=left;spacingLeft=30;grIcon=mxgraph.aws4.group_region;strokeColor=#00A4A6;fillColor=none;fontColor=#147EBA;dashed=1;" vertex="1" parent="aws">
+        <mxCell id="region" value="Região do ambiente — develop: us-east-2 · staging e production: us-east-1 (production: NAT por AZ, RDS Multi-AZ, Redis com réplica)" style="sketch=0;outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;verticalAlign=top;align=left;spacingLeft=30;grIcon=mxgraph.aws4.group_region;strokeColor=#00A4A6;fillColor=none;fontColor=#147EBA;dashed=1;" vertex="1" parent="aws">
           <mxGeometry x="220" y="38" width="1160" height="500" as="geometry" />
         </mxCell>
         <mxCell id="vpc" value="VPC" style="sketch=0;outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;verticalAlign=top;align=left;spacingLeft=30;grIcon=mxgraph.aws4.group_vpc2;strokeColor=#8C4FFF;fillColor=none;fontColor=#AAB7B8;dashed=0;" vertex="1" parent="region">
@@ -301,10 +301,10 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="t2" value="Release branch + tags (semiautomático) → ambientes" style="text;align=left;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#0F172A;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="t2" value="Develop por botão · release em staging · main em produção" style="text;align=left;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#0F172A;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="40" y="16" width="1100" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="s2" value="Vale para cada um dos 5 serviços separadamente (versões independentes). No toggle-master-infra o fluxo de branches é o mesmo, mas cada evento roda o terraform.yml (apply no ambiente) em vez de imagem e GitOps." style="text;align=left;verticalAlign=middle;fontSize=13;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="s2" value="Vale para cada um dos 5 serviços separadamente (versões independentes). No toggle-master-infra o fluxo de branches é o mesmo, mas cada evento roda o terraform.yml (apply no ambiente) em vez de imagem e GitOps. O develop é compartilhado: vale o último deploy." style="text;align=left;verticalAlign=middle;fontSize=13;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="40" y="52" width="1420" height="40" as="geometry" />
         </mxCell>
         <mxCell id="h0" value="&lt;b&gt;Gatilho (repo do serviço)&lt;/b&gt;" style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=center;fontSize=13;" vertex="1" parent="1">
@@ -322,13 +322,13 @@
         <mxCell id="h4" value="&lt;b&gt;Ambiente AWS&lt;/b&gt;" style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;align=center;fontSize=13;" vertex="1" parent="1">
           <mxGeometry x="1210" y="96" width="250" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="develop_b" value="push em &lt;b&gt;release/vX.Y.Z&lt;/b&gt;&lt;br&gt;(merge de PR de feature/* ou fix/*)" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="develop_b" value="botão &lt;b&gt;Run workflow&lt;/b&gt; do ci.yml&lt;br&gt;(qualquer branch: feature/*, fix/*...)" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="40" y="140" width="250" height="70" as="geometry" />
         </mxCell>
         <mxCell id="develop_c" value="build · lint · SAST/SCA&lt;br&gt;Trivy · &lt;b&gt;push ECR&lt;/b&gt;" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="1">
           <mxGeometry x="340" y="140" width="220" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="develop_o" value="overlays/&lt;b&gt;develop&lt;/b&gt;&lt;br&gt;newTag = vX.Y.Z-&amp;lt;sha&amp;gt;" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="develop_o" value="overlays/&lt;b&gt;develop&lt;/b&gt;&lt;br&gt;newTag = dev-&amp;lt;branch&amp;gt;-&amp;lt;sha&amp;gt;" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="610" y="140" width="250" height="70" as="geometry" />
         </mxCell>
         <mxCell id="develop_a" value="auto-sync&lt;br&gt;(consulta o repo a cada 60 s)" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
@@ -337,10 +337,10 @@
         <mxCell id="develop_e" value="&lt;b&gt;develop&lt;/b&gt; · us-east-2" style="rounded=1;arcSize=8;fillColor=#DCFCE7;strokeColor=#15803D;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="1210" y="140" width="250" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="staging_b" value="botão &lt;b&gt;promover-staging&lt;/b&gt;&lt;br&gt;cria tag &lt;b&gt;vX.Y.Z-rc.N&lt;/b&gt;" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="staging_b" value="push em &lt;b&gt;release/vX.Y.Z&lt;/b&gt;&lt;br&gt;(merge de PR de feature/* ou fix/*)" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="40" y="250" width="250" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="staging_c" value="&lt;b&gt;sem novo build&lt;/b&gt;&lt;br&gt;mesma imagem + re-scan Trivy" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="1">
+        <mxCell id="staging_c" value="build · lint · SAST/SCA&lt;br&gt;Trivy · &lt;b&gt;push ECR&lt;/b&gt;" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="1">
           <mxGeometry x="340" y="250" width="220" height="70" as="geometry" />
         </mxCell>
         <mxCell id="staging_o" value="overlays/&lt;b&gt;staging&lt;/b&gt;&lt;br&gt;newTag = vX.Y.Z-&amp;lt;sha&amp;gt;" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
@@ -349,22 +349,22 @@
         <mxCell id="staging_a" value="auto-sync&lt;br&gt;(consulta o repo a cada 60 s)" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="910" y="250" width="250" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="staging_e" value="&lt;b&gt;staging&lt;/b&gt; · us-west-2" style="rounded=1;arcSize=8;fillColor=#FEF9C3;strokeColor=#A16207;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="staging_e" value="&lt;b&gt;staging&lt;/b&gt; · us-east-1" style="rounded=1;arcSize=8;fillColor=#FEF9C3;strokeColor=#A16207;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="1210" y="250" width="250" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="prod_b" value="botão &lt;b&gt;promover-producao&lt;/b&gt;&lt;br&gt;tag &lt;b&gt;vX.Y.Z&lt;/b&gt; no commit do rc aprovado" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="prod_b" value="merge do PR&lt;br&gt;&lt;b&gt;release/vX.Y.Z → main&lt;/b&gt;" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="40" y="360" width="250" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="prod_c" value="&lt;b&gt;sem novo build&lt;/b&gt; · re-scan Trivy&lt;br&gt;aprovação (GitHub Environment)" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="1">
+        <mxCell id="prod_c" value="&lt;b&gt;sem novo build&lt;/b&gt; · mesma imagem&lt;br&gt;de staging · re-scan · aprovação" style="rounded=1;arcSize=8;fillColor=#DBEAFE;strokeColor=#1D4ED8;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;verticalAlign=middle;" vertex="1" parent="1">
           <mxGeometry x="340" y="360" width="220" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="prod_o" value="overlays/&lt;b&gt;production&lt;/b&gt;&lt;br&gt;newTag = vX.Y.Z-&amp;lt;sha&amp;gt;" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="prod_o" value="overlays/&lt;b&gt;production&lt;/b&gt;&lt;br&gt;newTag = o mesmo de staging" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="610" y="360" width="250" height="70" as="geometry" />
         </mxCell>
         <mxCell id="prod_a" value="auto-sync &lt;b&gt;só na janela&lt;/b&gt;&lt;br&gt;(sync window)" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="910" y="360" width="250" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="prod_e" value="&lt;b&gt;production&lt;/b&gt; · us-east-1" style="rounded=1;arcSize=8;fillColor=#FEE2E2;strokeColor=#B91C1C;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="prod_e" value="&lt;b&gt;production&lt;/b&gt; · us-east-1&lt;br&gt;redundante em 2 AZs" style="rounded=1;arcSize=8;fillColor=#FEE2E2;strokeColor=#B91C1C;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="1210" y="360" width="250" height="70" as="geometry" />
         </mxCell>
         <mxCell id="gf_t" value="&lt;b&gt;Fluxo das branches&lt;/b&gt;" style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;fontSize=13;" vertex="1" parent="1">
@@ -382,13 +382,16 @@
         <mxCell id="gf_feat" value="&lt;b&gt;feature/*&lt;/b&gt; · &lt;b&gt;fix/*&lt;/b&gt;&lt;br&gt;uma demanda por PR" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="360" y="640" width="240" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="gf_tags" value="tags &lt;b&gt;vX.Y.Z-rc.N&lt;/b&gt; → staging&lt;br&gt;tag &lt;b&gt;vX.Y.Z&lt;/b&gt; → production" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="gf_tags" value="&lt;b&gt;staging&lt;/b&gt;&lt;br&gt;a cada push na release" style="rounded=1;arcSize=8;fillColor=#D1FAE5;strokeColor=#047857;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="720" y="510" width="260" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="gf_main2" value="&lt;b&gt;main&lt;/b&gt;&lt;br&gt;atualizada" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="gf_main2" value="&lt;b&gt;main&lt;/b&gt; → production&lt;br&gt;+ tag &lt;b&gt;vX.Y.Z&lt;/b&gt;" style="rounded=1;arcSize=8;fillColor=#FFFFFF;strokeColor=#57606A;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="1100" y="510" width="180" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="n2" value="&lt;b&gt;Tirar uma demanda do pacote:&lt;/b&gt; &lt;i&gt;git revert -m 1&lt;/i&gt; do merge dela na release + novo rc. &lt;b&gt;Cancelar o pacote:&lt;/b&gt; abandonar a release (a main não foi tocada). &lt;b&gt;Rollback em produção:&lt;/b&gt; &lt;i&gt;git revert&lt;/i&gt; do commit de deploy no repo GitOps; o ArgoCD volta a imagem anterior. Pull requests rodam build, lint e segurança, mas não publicam imagem nem alteram o GitOps. &lt;b&gt;Primeira vez:&lt;/b&gt; os workflows de cada repositório entram por um PR direto para a main (os botões só aparecem a partir da main)." style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+        <mxCell id="gf_dev" value="&lt;b&gt;develop&lt;/b&gt;&lt;br&gt;qualquer branch, sob demanda" style="rounded=1;arcSize=8;fillColor=#DCFCE7;strokeColor=#15803D;fontSize=11;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
+          <mxGeometry x="720" y="640" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="n2" value="&lt;b&gt;Tirar uma demanda do pacote:&lt;/b&gt; &lt;i&gt;git revert&lt;/i&gt; do commit dela na release (squash = 1 commit); o push sobe o pacote sem ela em staging. &lt;b&gt;Cancelar o pacote:&lt;/b&gt; abandonar a release (a main não foi tocada). &lt;b&gt;Rollback em produção:&lt;/b&gt; &lt;i&gt;git revert&lt;/i&gt; do commit de deploy no repo GitOps; o ArgoCD volta a imagem anterior. Pull requests rodam build, lint e segurança, mas não publicam imagem nem alteram o GitOps. &lt;b&gt;Primeira vez:&lt;/b&gt; os workflows de cada repositório entram por um PR direto para a main (os botões só aparecem a partir da main)." style="text;align=left;verticalAlign=middle;fontSize=11;fontColor=#475569;html=1;whiteSpace=wrap;fontFamily=Helvetica;" vertex="1" parent="1">
           <mxGeometry x="40" y="710" width="1420" height="60" as="geometry" />
         </mxCell>
         <mxCell id="develop_bc" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;" edge="1" parent="1" source="develop_b" target="develop_c">
@@ -427,10 +430,10 @@
         <mxCell id="prod_ae" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;" edge="1" parent="1" source="prod_a" target="prod_e">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="promo1" value="validado" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;dashed=1;exitX=0.15;exitY=1;exitDx=0;exitDy=0;entryX=0.15;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="develop_b" target="staging_b">
+        <mxCell id="promo1" value="PR para a release" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;dashed=1;exitX=0.15;exitY=1;exitDx=0;exitDy=0;entryX=0.15;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="develop_b" target="staging_b">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="promo2" value="aprovado" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;dashed=1;exitX=0.15;exitY=1;exitDx=0;exitDy=0;entryX=0.15;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="staging_b" target="prod_b">
+        <mxCell id="promo2" value="PR para a main" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;dashed=1;exitX=0.15;exitY=1;exitDx=0;exitDy=0;entryX=0.15;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="staging_b" target="prod_b">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="gf_e1" value="cria a partir da main" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;dashed=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="gf_main1" target="gf_rel">
@@ -442,10 +445,13 @@
         <mxCell id="gf_e2" value="PR" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="gf_feat" target="gf_rel">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="gf_e3" value="botões&lt;br&gt;promover-*" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="gf_rel" target="gf_tags">
+        <mxCell id="gf_e3" value="push" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="gf_rel" target="gf_tags">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="gf_e4" value="PR após&lt;br&gt;produção" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="gf_tags" target="gf_main2">
+        <mxCell id="gf_e4" value="validado:&lt;br&gt;PR + merge" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="gf_tags" target="gf_main2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gf_e5" value="botão Run workflow" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;fontSize=11;labelBackgroundColor=#FFFFFF;strokeColor=#334155;fontColor=#334155;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="gf_feat" target="gf_dev">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
       </root>

@@ -1,6 +1,6 @@
 # Terraform — ToggleMaster (Fase 3)
 
-Toda a infraestrutura AWS do ToggleMaster em código, com um state remoto por ambiente e três ambientes (develop, staging e production), cada um em uma região.
+Toda a infraestrutura AWS do ToggleMaster em código, com um state remoto por ambiente e três ambientes (develop, staging e production): develop em us-east-2; staging e production em us-east-1, com production redundante em 2 zonas de disponibilidade.
 
 ```
 terraform/
@@ -116,6 +116,11 @@ kubectl port-forward -n argocd svc/argocd-server 8080:80     # http://localhost:
 Na ordem inversa, conferindo entre os passos:
 
 ```bash
+# 0. esvaziar o cluster: o ArgoCD para de recriar recursos, e os objetos do
+#    KEDA saem com o operador ainda vivo (senão o destroy do KEDA trava)
+kubectl -n argocd scale statefulset argocd-application-controller --replicas=0
+kubectl delete scaledobjects.keda.sh --all -A --timeout=120s
+
 # 1. addons: remove o NLB do ingress-nginx e o volume EBS do OpenBao
 ./tf.sh cluster-addons develop destroy
 
@@ -133,7 +138,7 @@ aws secretsmanager delete-secret --region us-east-2 \
 
 Se o passo 2 mostrar um load balancer, apague-o antes do passo 3; senão o destroy da VPC falha com `DependencyViolation`.
 
-Pela pipeline (**Actions → terraform → Run workflow**, ação `destroy`), os quatro passos rodam em sequência: o job espera os load balancers saírem da VPC antes do destroy da infra e apaga o segredo do OpenBao no final.
+Pela pipeline (**Actions → terraform → Run workflow**, ação `destroy`), os passos rodam em sequência: o job esvazia o cluster (passo 0), espera os load balancers saírem da VPC antes do destroy da infra e apaga o segredo do OpenBao no final.
 
 Verificação final (todas as saídas vazias):
 
@@ -153,13 +158,23 @@ O `global` e o `bootstrap` ficam: o ECR com as imagens e o bucket com o históri
 
 | Ambiente | Região | VPC | Recebe deploy de |
 |---|---|---|---|
-| develop | us-east-2 (Ohio) | 10.10.0.0/16 | push em `release/vX.Y.Z` |
-| staging | us-west-2 (Oregon) | 10.20.0.0/16 | tag `vX.Y.Z-rc.N` |
-| production | us-east-1 (N. Virginia) | 10.30.0.0/16 | tag `vX.Y.Z` (aprovação + janela do ArgoCD) |
+| develop | us-east-2 (Ohio) | 10.10.0.0/16 | botão Run workflow, qualquer branch |
+| staging | us-east-1 (N. Virginia) | 10.20.0.0/16 | push em `release/vX.Y.Z` |
+| production | us-east-1 (N. Virginia), 2 AZs redundantes | 10.30.0.0/16 | merge do PR `release/vX.Y.Z` → `main` (aprovação + janela do ArgoCD) |
 
-O código é o mesmo para os três. O que muda fica em `envs/<ambiente>.tfvars`: região, AZs, CIDRs, tamanho e as proteções de produção (comentadas em `production.tfvars` por causa do custo).
+O código é o mesmo para os três. O que muda fica em `envs/<ambiente>.tfvars`: região, AZs, CIDRs, tamanho e a redundância de produção.
 
-Cada ambiente ligado custa cerca de **US$0,40/hora** (EKS, 2 nós, NAT, 3 RDS, Redis e NLB). O orçamento do stack `global` vale para a conta inteira, somando os três.
+| Redundância | develop | staging | production |
+|---|---|---|---|
+| sub-redes e nós em 2 AZs | sim | sim | sim (mínimo 2 nós) |
+| NAT Gateway | 1 | 1 | 1 por AZ (`single_nat_gateway = false`) |
+| RDS | 1 AZ | 1 AZ | Multi-AZ (`db_multi_az = true`) |
+| Redis | 1 nó | 1 nó | primário + réplica, failover automático (`redis_num_cache_clusters = 2`) |
+| réplicas dos serviços | 1 | 1 | 2, espalhadas pelas AZs (overlay de production no GitOps) |
+
+staging divide a região com production; como o DynamoDB tem nome por região, a tabela de staging é `ToggleMasterAnalytics-staging` (`dynamodb_table_name` em `staging.tfvars`, que precisa casar com o overlay de staging no GitOps).
+
+develop e staging ligados custam cerca de **US$0,40/hora** cada (EKS, 2 nós, NAT, 3 RDS, Redis e NLB); production, com a redundância, ~**US$0,52/hora**. O orçamento do stack `global` vale para a conta inteira, somando os três.
 
 ## State remoto, lock e versionamento
 
@@ -202,7 +217,7 @@ O stack `global` cria o provedor OIDC do GitHub e três roles:
 
 | Role | Quem assume | Permissão |
 |---|---|---|
-| `togglemaster-gha-ecr-push` | repositórios dos 5 serviços, só em `release/*` e tags `v*` | push nos repositórios `togglemaster/*` do ECR |
+| `togglemaster-gha-ecr-push` | repositórios dos 5 serviços, só jobs dos Environments `develop`, `staging` e `production` | push nos repositórios `togglemaster/*` do ECR |
 | `togglemaster-gha-terraform-plan` | `toggle-master-infra`, qualquer branch ou PR | `ReadOnlyAccess` + lock no bucket de state |
 | `togglemaster-gha-terraform-apply` | `toggle-master-infra`, só jobs com `environment:` | `AdministratorAccess` |
 
@@ -214,27 +229,25 @@ Nenhum `AWS_ACCESS_KEY_ID` fica no GitHub. Para ligar a pipeline (`.github/workf
 
 Até o `global` ser aplicado, o job de plan de um PR falha no passo `configure-aws-credentials`: a role ainda não existe. É esperado no primeiro PR.
 
-A estratégia de branches é **release branch + tags**, com a criação da release e as promoções feitas por botão:
+A estratégia é a mesma dos serviços: **develop por botão, release em staging, main em production**:
 
 ```
-feature/*, fix/*  --PR-->  release/vX.Y.Z  --push-->  develop
-                           tag vX.Y.Z-rc.N  -------->  staging
-                           tag vX.Y.Z       -------->  production (mesmo commit do rc aprovado)
-                           release/vX.Y.Z  --PR-->  main (depois de production)
+qualquer branch   --botão Run workflow-->  develop (plan, apply ou destroy)
+feature/*, fix/*  --PR-->  release/vX.Y.Z  --push-->  staging
+                           release/vX.Y.Z  --PR + merge-->  main  -->  production (com aprovação)
 ```
 
-A `main` só recebe o que já está em produção. Cancelar um pacote é abandonar a release, sem desfazer nada na `main`.
+A `main` é o que está em produção. Cancelar um pacote é abandonar a release, sem desfazer nada na `main`.
 
 | Evento | O que roda |
 |---|---|
-| PR para `release/*` | fmt, validate, tflint, checkov e plan de **develop** |
-| PR para `main` | o mesmo, com plan de **production** (confere que não há drift) |
-| push em `release/*` (com mudança em `terraform/`) | validação + apply em **develop** |
-| tag `vX.Y.Z-rc.N` | validação + apply em **staging** |
-| tag `vX.Y.Z` | validação + apply em **production**, depois da aprovação do Environment |
-| manual (`workflow_dispatch`) | plan, apply ou destroy de qualquer ambiente |
+| PR para `release/*` | fmt, validate, tflint, checkov e plan de **staging** |
+| PR para `main` | o mesmo, com plan de **production** (mostra o que o merge vai mudar) |
+| push em `release/*` (com mudança em `terraform/`) | validação + apply em **staging** |
+| push na `main` (merge da release, com mudança em `terraform/`) | validação + apply em **production**, depois da aprovação do Environment; cria a tag `vX.Y.Z` na main |
+| manual (`workflow_dispatch`) | plan, apply ou destroy. **apply**: develop com qualquer branch, staging só a partir de uma `release/*`, production só a partir da `main`. **destroy**: qualquer ambiente, de qualquer branch |
 
-Atenção ao custo: um push numa release (ou uma tag) **cria o ambiente** se ele estiver desligado. Destrua pelo `workflow_dispatch` (ação `destroy`) ao fim da sessão.
+Atenção ao custo: um push numa release ou um merge na `main` **cria o ambiente** se ele estiver desligado. Destrua pelo `workflow_dispatch` (ação `destroy`) ao fim da sessão.
 
 ## Addons do cluster
 
@@ -273,7 +286,7 @@ cd cluster-addons && ./check-chart-versions.sh 1.36
 
 **Acesso ao cluster declarado, não herdado.** `enable_cluster_creator_admin_permissions = false`, com access entries explícitos para as roles da CI e para os ARNs de `cluster_admin_principal_arns`. Com pessoas e CI aplicando o mesmo state, o "criador" mudaria a cada execução e o módulo recriaria o acesso toda vez.
 
-**Um ECR para os três ambientes.** A CI faz o build uma vez e publica `v1.0.0-<sha>`. Promover para staging ou production é só trocar a tag no GitOps: a imagem que roda em production é, byte a byte, a que foi testada em staging.
+**Um ECR para os três ambientes.** A CI publica `dev-<branch>-<sha>` para develop (expira em 14 dias) e `vX.Y.Z-<sha>` a cada push na release (staging). Ir para production é só copiar a tag de staging no GitOps: a imagem que roda em production é, byte a byte, a que foi testada em staging.
 
 **Nomes com o ambiente.** Nomes de IAM são globais na conta. Todo recurso usa o prefixo `togglemaster-<ambiente>`, o que permite ter os três ambientes ligados ao mesmo tempo.
 
@@ -294,3 +307,4 @@ cd cluster-addons && ./check-chart-versions.sh 1.36
 | `ExternalSecret` em `SecretSyncedError` | OpenBao ainda não inicializado | rode o `openbao-bootstrap.sh` |
 | login no ArgoCD: "Request has been terminated" | o `kubectl port-forward` caiu ou foi encerrado | suba o port-forward de novo e deixe o terminal aberto |
 | destroy da `infra` com `DependencyViolation` na VPC | NLB criado pelo cluster ficou órfão | apague o load balancer e rode o destroy de novo |
+| destroy do `cluster-addons` para em `helm_release.keda: Still destroying...` e termina com `context deadline exceeded` | o `ScaledObject` do analytics-service tem a trava (finalizer) do KEDA; o KEDA saiu antes dele e ninguém soltou a trava | a pipeline já faz o passo 0; num cluster travado: `kubectl -n analytics-service patch scaledobject analytics-service --type merge -p '{"metadata":{"finalizers":null}}'` e rode o destroy de novo |

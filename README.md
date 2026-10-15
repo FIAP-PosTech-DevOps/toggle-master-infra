@@ -3,7 +3,7 @@
 Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 microsserviços. Este repositório cobre:
 
 - **Local**: Docker Compose com LocalStack, para desenvolvimento.
-- **AWS**: três ambientes (develop, staging e production), cada um em uma região, com EKS provisionado por Terraform, deploy por GitOps (ArgoCD) e segredos no OpenBao.
+- **AWS**: três ambientes (develop, staging e production), develop em us-east-2 e staging e production em us-east-1, production com redundância em 2 zonas de disponibilidade, com EKS provisionado por Terraform, deploy por GitOps (ArgoCD) e segredos no OpenBao.
 - **CI/CD**: os workflows reutilizáveis que os 5 serviços usam (build, testes, SAST, SCA, scan de imagem, ECR e promoção entre ambientes).
 
 | Assunto | Onde está |
@@ -61,9 +61,12 @@ O `evaluation-service` é o caminho quente: responde do Redis sempre que possív
 ### Do commit ao cluster
 
 ```
-repositório do serviço ──push release/*──▶ CI (testes, Sonar, Snyk, Trivy) ──▶ ECR (imagem vX.Y.Z-<sha>)
-                                              │
-                                              └─ commit do newTag ──▶ toggle-master-gitops ──▶ ArgoCD do ambiente
+botão Run workflow (qualquer branch) ─┐
+push em release/vX.Y.Z ──────────────┼──▶ CI (testes, Sonar, Snyk, Trivy) ──▶ ECR ──▶ commit do newTag
+merge release/vX.Y.Z → main ─────────┘    (production: sem build, mesma imagem       no toggle-master-gitops
+                                            de staging + aprovação)                    │
+                                                                                       ▼
+                                                                               ArgoCD do ambiente
 ```
 
 Ninguém roda `kubectl apply` à mão. A infraestrutura de cada ambiente vem do Terraform deste repositório, e as aplicações vêm do repositório GitOps. Detalhes em [`docs/ci-cd.md`](docs/ci-cd.md).
@@ -89,9 +92,13 @@ Ninguém roda `kubectl apply` à mão. A infraestrutura de cada ambiente vem do 
 
 | Ambiente | Região | Recebe deploy de |
 |---|---|---|
-| develop | us-east-2 (Ohio) | push em `release/vX.Y.Z` |
-| staging | us-west-2 (Oregon) | tag `vX.Y.Z-rc.N` |
-| production | us-east-1 (N. Virginia) | tag `vX.Y.Z`, com aprovação e janela de deploy |
+| develop | us-east-2 (Ohio) | botão **Run workflow** com **qualquer branch** (ambiente compartilhado: vale o último deploy) |
+| staging | us-east-1 (N. Virginia) | push em `release/vX.Y.Z` (merge de cada PR no pacote) |
+| production | us-east-1 (N. Virginia), redundante em 2 AZs | merge do PR `release/vX.Y.Z` → `main`, com aprovação e janela de deploy |
+
+**Redundância em production.** As sub-redes dos três ambientes ficam em 2 Availability Zones (o EKS exige), mas só production paga pela redundância completa: um NAT Gateway por AZ, no mínimo 2 nós (um em cada AZ), RDS Multi-AZ, Redis com réplica e failover automático, e os overlays de production espalham as réplicas dos serviços pelas zonas (`topologySpreadConstraints`). Se uma AZ inteira cair, production continua atendendo. develop e staging ficam enxutos (1 NAT, RDS e Redis de um nó).
+
+**staging e production na mesma região.** A release é validada nas mesmas condições em que vai rodar. As VPCs são diferentes (10.20/16 e 10.30/16) e todo recurso leva o nome do ambiente; a exceção é a tabela do DynamoDB, que tem nome por região: em staging ela se chama `ToggleMasterAnalytics-staging`.
 
 ---
 
@@ -452,7 +459,7 @@ cd $INFRA/terraform
 
 Depois disso o ArgoCD do ambiente sincroniza sozinho o repositório [`toggle-master-gitops`](https://github.com/FIAP-PosTech-DevOps/toggle-master-gitops). As aplicações sobem com a imagem que estiver no overlay do ambiente; até a CI publicar a primeira versão de cada serviço, elas ficam em `ImagePullBackOff` (overlay em `v0.0.0`).
 
-**Pela pipeline.** Depois do setup da conta, um ambiente inteiro (infra, addons e `openbao-bootstrap`) também sobe pelo GitHub Actions (`terraform.yml`): push numa `release/*` aplica em develop, a tag `-rc` em staging e a tag final em production. Para subir ou destruir sob demanda, use **Actions → terraform → Run workflow**, escolhendo o ambiente e a ação.
+**Pela pipeline.** Depois do setup da conta, um ambiente inteiro (infra, addons e `openbao-bootstrap`) também sobe pelo GitHub Actions (`terraform.yml`): o botão **Actions → terraform → Run workflow** aplica em develop a branch escolhida, o push numa `release/*` aplica em staging e o merge da release na `main` aplica em production (com aprovação). O mesmo botão faz plan e destroy de qualquer ambiente.
 
 **Deploy das aplicações.** Não há mais script de deploy. Uma versão chega a um ambiente quando a CI do serviço altera o `newTag` no repositório GitOps (ver [`docs/ci-cd.md`](docs/ci-cd.md)). Para voltar uma versão, faça `git revert` do commit de deploy no repositório GitOps.
 
@@ -756,6 +763,8 @@ Na ordem inversa da criação, conferindo entre os passos. O roteiro completo, c
 
 ```bash
 cd $INFRA/terraform
+kubectl -n argocd scale statefulset argocd-application-controller --replicas=0   # 0. ArgoCD para de recriar
+kubectl delete scaledobjects.keda.sh --all -A --timeout=120s                    #    e os objetos do KEDA saem antes dele
 ./tf.sh cluster-addons develop destroy     # 1. remove NLB e volume do OpenBao
 aws elbv2 describe-load-balancers --region us-east-2 --query 'LoadBalancers[].LoadBalancerName'   # 2. precisa ser []
 ./tf.sh infra develop destroy              # 3. recursos AWS do ambiente
@@ -763,7 +772,7 @@ aws secretsmanager delete-secret --region us-east-2 \
   --secret-id togglemaster/develop/openbao-init --force-delete-without-recovery   # 4. segredo do bootstrap
 ```
 
-Pela pipeline: **Actions → terraform → Run workflow**, ambiente e ação `destroy`. O job faz os quatro passos, incluindo a espera pelos load balancers e o segredo do OpenBao.
+Pela pipeline: **Actions → terraform → Run workflow**, ambiente e ação `destroy`. O job faz todos os passos, incluindo esvaziar o cluster, a espera pelos load balancers e o segredo do OpenBao.
 
 **Por que o `cluster-addons` antes do `infra`.** O NLB foi criado pelo aws-load-balancer-controller dentro do cluster e não está no state do Terraform. Destruindo o cluster antes, o NLB fica órfão: continua cobrando e o `destroy` da VPC falha com `DependencyViolation`, porque ainda há um recurso pendurado nas sub-redes. Pelo mesmo motivo o PVC do OpenBao usa `whenDeleted: Delete`: o volume EBS sai junto com o chart.
 
@@ -782,7 +791,7 @@ Os repositórios de cache e espelho **vale a pena manter** entre sessões: econo
 
 ## 8. Custos
 
-Estimativa de **um ambiente ligado**, com as escolhas deste projeto (os preços de us-east-2 e us-west-2 são praticamente os mesmos de us-east-1):
+Estimativa de **um ambiente ligado**, com as escolhas deste projeto (os preços de us-east-2 são praticamente os mesmos de us-east-1):
 
 | Recurso | Custo/hora | Custo/dia |
 |---|---|---|
@@ -793,9 +802,11 @@ Estimativa de **um ambiente ligado**, com as escolhas deste projeto (os preços 
 | ElastiCache `cache.t3.micro` | ~US$0,017 | ~US$0,41 |
 | NLB | ~US$0,023 | ~US$0,60 |
 | DynamoDB / SQS / KMS | mínimo | ~US$0,10 |
-| **Total por ambiente** | **~US$0,41** | **~US$9,90** |
+| **Total por ambiente (develop, staging)** | **~US$0,41** | **~US$9,90** |
+| production: + 2º NAT, standby dos 3 RDS (Multi-AZ) e réplica do Redis | +~US$0,11 | +~US$2,70 |
+| **Total production** | **~US$0,52** | **~US$12,60** |
 
-Os três ambientes ligados ao mesmo tempo custam ~US$1,25/hora. Fora isso, a conta mantém o bucket do state, o ECR e o segredo do OpenBao de cada ambiente ligado (US$0,40/mês cada), tudo na casa dos centavos.
+Os três ambientes ligados ao mesmo tempo custam ~US$1,35/hora. Fora isso, a conta mantém o bucket do state, o ECR e o segredo do OpenBao de cada ambiente ligado (US$0,40/mês cada), tudo na casa dos centavos.
 
 **O padrão de uso muda tudo:**
 
@@ -805,7 +816,7 @@ Os três ambientes ligados ao mesmo tempo custam ~US$1,25/hora. Fora isso, a con
 | develop + staging + production por 3h, para a demonstração | ~US$4 |
 | 1 ambiente ligado 24h por 10 dias | ~US$99 |
 
-O maior custo é **tempo ligado**, não tamanho de instância: o control plane do EKS cobra por hora independentemente do uso e não pode ser "pausado", só destruído. Atenção também à pipeline: um push numa `release/*` ou uma tag **cria o ambiente** se ele estiver desligado.
+O maior custo é **tempo ligado**, não tamanho de instância: o control plane do EKS cobra por hora independentemente do uso e não pode ser "pausado", só destruído. Atenção também à pipeline: um push numa `release/*` (staging) ou um merge na `main` (production) **cria o ambiente** se ele estiver desligado e houver mudança em `terraform/`.
 
 O orçamento é criado pelo stack `global`, para a conta inteira, com alertas em 50%, 80% e previsão de 100%. O e-mail precisa ser verificado uma vez (ver [`terraform/README.md`](terraform/README.md#depois-do-global-confirmar-o-e-mail-do-orçamento)).
 
@@ -825,8 +836,8 @@ O orçamento é criado pelo stack `global`, para a conta inteira, com alertas em
 **Na esteira**
 
 - **SAST, SCA e scan de imagem bloqueando o merge**: SonarQube Cloud (Quality Gate), Snyk ou Trivy nas dependências e Trivy na imagem antes do push no ECR. Vulnerabilidade **crítica** reprova. Detalhes em [`docs/ci-cd.md`](docs/ci-cd.md).
-- **Sem chave de acesso no GitHub**: a CI assume roles da AWS por OIDC, cada uma restrita às refs que podem usá-la (`release/*`, tags `v*`, Environments).
-- **Imagem imutável**: o ECR recusa sobrescrever uma tag, e a imagem promovida para staging e production é a mesma que passou por develop.
+- **Sem chave de acesso no GitHub**: a CI assume roles da AWS por OIDC. As roles de escrita (publicar imagem, aplicar Terraform) só confiam em jobs que rodam dentro de um GitHub Environment (`develop`, `staging`, `production`); PRs e branches soltas não recebem credencial.
+- **Imagem imutável**: o ECR recusa sobrescrever uma tag, e a imagem que vai para production é a mesma que está em staging (a pipeline confere antes de promover).
 - **Produção com aprovação** (GitHub Environment) e janela de deploy no ArgoCD.
 
 **Na AWS e no cluster**
@@ -903,9 +914,10 @@ tipo/escopo-descricao
 | `fix/` | correção de bug |
 | `chore/` | manutenção geral |
 | `docs/` | documentação |
-| `release/vX.Y.Z` | criada pelo botão `criar-release`; recebe os PRs e sobe em develop |
+| `release/vX.Y.Z` | criada pelo botão `criar-release`; recebe os PRs e sobe em **staging** |
+| `main` | o que está em **production**; só recebe o merge de uma `release/*` |
 
-As tags `vX.Y.Z-rc.N` (staging) e `vX.Y.Z` (production) são criadas pelos botões de promoção. Fluxo completo em [`docs/ci-cd.md`](docs/ci-cd.md).
+Qualquer branch sobe em **develop** pelo botão Run workflow. A tag `vX.Y.Z` é criada na `main` pela pipeline, depois do deploy em production. Fluxo completo em [`docs/ci-cd.md`](docs/ci-cd.md).
 
 ---
 

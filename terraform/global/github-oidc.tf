@@ -18,7 +18,8 @@
 #
 # Três roles, cada uma com o mínimo que o job precisa:
 #
-#   gha-ecr-push         repos dos serviços, só em release/* e tags v*
+#   gha-ecr-push         repos dos serviços, só jobs dos Environments develop,
+#                        staging e production (os jobs de deploy)
 #   gha-terraform-plan   repo de infra, qualquer branch/PR, somente leitura
 #   gha-terraform-apply  repo de infra, só via GitHub Environment (com
 #                        aprovação configurável no GitHub), admin
@@ -36,17 +37,20 @@ locals {
     repo => "repo:${var.github_org}@${var.github_owner_id}/${repo}@${id}"
   }
 
-  # <prefixo>:ref:<ref>, para cada serviço x ref permitida
-  # (ex.: repo:FIAP-PosTech-DevOps@286820110/auth-service@1312425511:ref:refs/heads/release/*).
+  # Jobs que declaram `environment:` recebem um sub com o environment no lugar
+  # da branch: <prefixo>:environment:<nome>. É o que as roles de escrita usam:
+  # a branch do develop é livre (qualquer feature), mas só o job de deploy,
+  # dentro de um Environment, recebe credencial.
+
+  # Cada serviço x environment
+  # (ex.: repo:FIAP-PosTech-DevOps@286820110/auth-service@1312425511:environment:staging).
   ecr_push_subjects = flatten([
     for repo in var.services : [
-      for ref in var.ci_push_refs :
-      "${local.repo_subject[repo]}:ref:${ref}"
+      for env in var.ci_push_environments :
+      "${local.repo_subject[repo]}:environment:${env}"
     ]
   ])
 
-  # Jobs que declaram `environment:` recebem um sub com o environment no lugar
-  # da branch: <prefixo>:environment:<nome>.
   apply_subjects = [
     for env in var.deploy_environments :
     "${local.repo_subject[var.infra_repository]}:environment:${env}"
@@ -86,9 +90,9 @@ data "aws_iam_policy_document" "trust_ecr_push" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # StringLike por causa dos curingas (release/*, v*).
+    # Lista fechada, sem curinga: StringEquals.
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
       values   = local.ecr_push_subjects
     }

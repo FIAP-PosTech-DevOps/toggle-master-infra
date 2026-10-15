@@ -1,5 +1,5 @@
 environment = "staging"
-aws_region  = "us-west-2"
+aws_region  = "us-east-1" # mesma região de production
 
 # Versões de chart e repositório GitOps têm default em variables.tf.
 # Sobrescreva aqui só se este ambiente precisar de algo diferente, por
