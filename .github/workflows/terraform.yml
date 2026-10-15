@@ -321,12 +321,13 @@ jobs:
           echo "ENV_REGION=$REGION" >> "$GITHUB_ENV"
           echo "VPC_ID=$VPC_ID" >> "$GITHUB_ENV"
 
-      # Antes de remover os addons, esvazia o que o ArgoCD criou e que tem
-      # "finalizer" de um operador. O caso real: o ScaledObject do
-      # analytics-service tem a trava do KEDA. Se o KEDA sair antes dele, ninguém
-      # solta a trava, o CRD fica preso em Terminating e o `helm uninstall`
-      # do KEDA estoura o tempo ("context deadline exceeded").
-      - name: esvaziar o cluster (ArgoCD e objetos do KEDA)
+      # Antes de remover os addons, esvazia os objetos dos operadores que
+      # têm "finalizer" (KEDA e External Secrets). Se o operador sai antes
+      # deles, ninguém solta a trava, o CRD fica preso em Terminating e o
+      # `helm uninstall` estoura o tempo ("context deadline exceeded"). Já
+      # aconteceu com o ScaledObject do analytics (KEDA) e com os
+      # ExternalSecret/ClusterSecretStore (External Secrets).
+      - name: esvaziar o cluster (ArgoCD, KEDA e External Secrets)
         shell: bash
         run: |
           CLUSTER="togglemaster-$ENVIRONMENT-cluster"
@@ -340,22 +341,35 @@ jobs:
           kubectl -n argocd scale statefulset argocd-application-controller --replicas=0 2>/dev/null \
             || echo "ArgoCD não encontrado"
 
-          # 2. Apaga os objetos do KEDA com o operador ainda vivo: ele mesmo
-          #    solta a trava e o objeto sai normalmente.
-          KEDA_TYPES=(scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh)
-          for r in "${KEDA_TYPES[@]}"; do
-            kubectl get crd "$r" >/dev/null 2>&1 || continue
+          # Todos os tipos (CRDs) dos dois operadores que existirem no cluster.
+          TYPES=()
+          for group in keda.sh external-secrets.io; do
+            while read -r t; do [[ -n "$t" ]] && TYPES+=("$t"); done \
+              < <(kubectl api-resources --api-group="$group" -o name 2>/dev/null)
+          done
+          echo "tipos encontrados: ${TYPES[*]:-nenhum}"
+
+          # 2. Apaga os objetos com os operadores ainda vivos: eles mesmos
+          #    soltam a trava e o objeto sai normalmente.
+          for r in "${TYPES[@]}"; do
             kubectl delete "$r" --all -A --wait=true --timeout=120s || true
           done
 
-          # 3. Se algum ficou preso (operador fora do ar), solta a trava à força.
-          for r in "${KEDA_TYPES[@]}"; do
-            kubectl get crd "$r" >/dev/null 2>&1 || continue
-            kubectl get "$r" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
-              | while read -r ns name; do
+          # 3. Se algum ficou preso (operador fora do ar), solta a trava à
+          #    força. O webhook do External Secrets pode recusar o patch se o
+          #    pod dele já saiu; sem o operador, ele não tem mais o que validar.
+          kubectl delete validatingwebhookconfiguration secretstore-validate externalsecret-validate \
+            --ignore-not-found >/dev/null 2>&1 || true
+          for r in "${TYPES[@]}"; do
+            kubectl get "$r" -A -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.namespace}{"\n"}{end}' 2>/dev/null \
+              | while read -r name ns; do
                   [[ -n "$name" ]] || continue
-                  echo "removendo o finalizer de $r $ns/$name"
-                  kubectl -n "$ns" patch "$r" "$name" --type merge -p '{"metadata":{"finalizers":null}}'
+                  echo "removendo o finalizer de $r ${ns:+$ns/}$name"
+                  if [[ -n "$ns" ]]; then
+                    kubectl -n "$ns" patch "$r" "$name" --type merge -p '{"metadata":{"finalizers":null}}'
+                  else
+                    kubectl patch "$r" "$name" --type merge -p '{"metadata":{"finalizers":null}}'
+                  fi
                 done
           done
           echo "cluster esvaziado"
