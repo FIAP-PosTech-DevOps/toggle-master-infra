@@ -372,6 +372,18 @@ jobs:
                   fi
                 done
           done
+          # 4. Applications do ArgoCD: com o controller parado (passo 1),
+          #    ninguém processa o finalizer resources-finalizer, e o helm
+          #    uninstall do argocd-root-app esperava até estourar o timeout
+          #    ("context deadline exceeded"). O cluster vai ser destruído,
+          #    então a exclusão em cascata não é necessária: solta a trava.
+          kubectl get applications.argoproj.io -A \
+              -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+            | while read -r ns name; do
+                [[ -n "$name" ]] || continue
+                echo "removendo o finalizer da Application $ns/$name"
+                kubectl -n "$ns" patch applications.argoproj.io "$name" --type merge -p '{"metadata":{"finalizers":null}}'
+              done
           echo "cluster esvaziado"
 
       # Ordem inversa da criação: primeiro o que roda dentro do cluster (o
