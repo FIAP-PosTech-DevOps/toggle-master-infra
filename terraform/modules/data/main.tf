@@ -47,6 +47,19 @@ resource "aws_db_subnet_group" "this" {
   subnet_ids = var.subnet_ids
 }
 
+# Log groups dos logs do Postgres, criados pelo Terraform ANTES do RDS. Sem
+# isto, o próprio RDS cria o log group ao exportar os logs, fora do state: o
+# destroy apaga a instância e o log group fica para trás (sem expiração e
+# cobrando armazenamento). Assim o destroy remove junto e há retenção.
+resource "aws_cloudwatch_log_group" "rds" {
+  #checkov:skip=CKV_AWS_158:logs de ambiente descartavel; CMK exigiria policy extra para o servico de logs
+  #checkov:skip=CKV_AWS_338:retencao curta de proposito (laboratorio, custo)
+  for_each = var.databases
+
+  name              = "/aws/rds/instance/${var.name_prefix}-${each.key}-db/postgresql"
+  retention_in_days = 7
+}
+
 # manage_master_user_password = true: o próprio RDS gera a senha e guarda no
 # Secrets Manager. A senha nunca passa pelo código, pelo tfvars nem pelo
 # state. O bootstrap do OpenBao lê de lá para montar a DATABASE_URL.
@@ -96,6 +109,9 @@ resource "aws_db_instance" "this" {
   final_snapshot_identifier = var.deletion_protection ? "${var.name_prefix}-${each.key}-final" : null
 
   apply_immediately = true
+
+  # O log group precisa existir antes de o RDS começar a exportar os logs.
+  depends_on = [aws_cloudwatch_log_group.rds]
 }
 
 # -----------------------------------------------------------------------------
