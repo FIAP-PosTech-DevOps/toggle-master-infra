@@ -360,29 +360,34 @@ jobs:
           #    pod dele já saiu; sem o operador, ele não tem mais o que validar.
           kubectl delete validatingwebhookconfiguration secretstore-validate externalsecret-validate \
             --ignore-not-found >/dev/null 2>&1 || true
+          #    O shell do Actions roda com -e e pipefail: `|| true` no get e no
+          #    patch para um objeto que já sumiu não derrubar o destroy.
           for r in "${TYPES[@]}"; do
-            kubectl get "$r" -A -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.namespace}{"\n"}{end}' 2>/dev/null \
+            { kubectl get "$r" -A -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.namespace}{"\n"}{end}' 2>/dev/null || true; } \
               | while read -r name ns; do
                   [[ -n "$name" ]] || continue
                   echo "removendo o finalizer de $r ${ns:+$ns/}$name"
                   if [[ -n "$ns" ]]; then
-                    kubectl -n "$ns" patch "$r" "$name" --type merge -p '{"metadata":{"finalizers":null}}'
+                    kubectl -n "$ns" patch "$r" "$name" --type merge -p '{"metadata":{"finalizers":null}}' || true
                   else
-                    kubectl patch "$r" "$name" --type merge -p '{"metadata":{"finalizers":null}}'
+                    kubectl patch "$r" "$name" --type merge -p '{"metadata":{"finalizers":null}}' || true
                   fi
                 done
           done
+
           # 4. Applications do ArgoCD: com o controller parado (passo 1),
           #    ninguém processa o finalizer resources-finalizer, e o helm
           #    uninstall do argocd-root-app esperava até estourar o timeout
           #    ("context deadline exceeded"). O cluster vai ser destruído,
           #    então a exclusão em cascata não é necessária: solta a trava.
-          kubectl get applications.argoproj.io -A \
-              -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+          #    Sem ArgoCD instalado (addons nunca aplicados), o get falha e
+          #    não há nada a fazer.
+          { kubectl get applications.argoproj.io -A \
+              -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null || true; } \
             | while read -r ns name; do
                 [[ -n "$name" ]] || continue
                 echo "removendo o finalizer da Application $ns/$name"
-                kubectl -n "$ns" patch applications.argoproj.io "$name" --type merge -p '{"metadata":{"finalizers":null}}'
+                kubectl -n "$ns" patch applications.argoproj.io "$name" --type merge -p '{"metadata":{"finalizers":null}}' || true
               done
           echo "cluster esvaziado"
 
