@@ -132,7 +132,12 @@ variable "alert_email" {
 }
 
 variable "budget_limit_usd" {
-  description = "Teto mensal em USD da CONTA inteira (os 3 ambientes somados)."
+  description = <<-EOT
+    Teto mensal de USO REAL em USD da CONTA inteira (ambientes + laboratório,
+    sem descontar créditos). Com 30: aviso em US$15 (50%), alerta em US$24
+    (80%) e previsão de passar de US$30 no mês. Parado, a conta gasta ~US$1,20/mês;
+    uma sessão com staging + production + Backstage, ~US$1/hora.
+  EOT
   type        = string
-  default     = "100"
+  default     = "30"
 }

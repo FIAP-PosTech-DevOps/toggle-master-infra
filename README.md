@@ -820,7 +820,7 @@ Os três ambientes ligados ao mesmo tempo custam ~US$1,35/hora. Fora isso, a con
 
 O maior custo é **tempo ligado**, não tamanho de instância: o control plane do EKS cobra por hora independentemente do uso e não pode ser "pausado", só destruído. Atenção também à pipeline: um push numa `release/*` (staging) ou um merge na `main` (production) **cria o ambiente** se ele estiver desligado e houver mudança em `terraform/`.
 
-O orçamento é criado pelo stack `global`, para a conta inteira, com alertas em 50%, 80% e previsão de 100%. O e-mail precisa ser verificado uma vez (ver [`terraform/README.md`](terraform/README.md#depois-do-global-confirmar-o-e-mail-do-orçamento)).
+O orçamento é criado pelo stack `global`, para a conta inteira: **US$30/mês de uso real (sem descontar créditos)**, com alertas em 50% (US$15), 80% (US$24) e previsão de passar do teto. Medir sem os créditos é o que faz o alerta funcionar numa conta com crédito: o custo líquido fica perto de zero e nunca dispararia. O e-mail precisa ser verificado uma vez (ver [`terraform/README.md`](terraform/README.md#depois-do-global-confirmar-o-e-mail-do-orçamento)).
 
 ### Escolhas de custo embutidas (e como reverter)
 

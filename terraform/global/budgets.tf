@@ -1,6 +1,10 @@
 # Um orçamento para a CONTA, não por ambiente: o crédito é um só, e três
 # alarmes independentes de US$80 deixariam passar um gasto somado de US$240.
 #
+# Mede o USO REAL, sem descontar créditos. O padrão da AWS soma o custo já
+# abatido dos créditos: com crédito na conta o valor fica perto de zero e os
+# alertas nunca disparam, nem com production esquecido ligado por dias.
+#
 # Confirme o e-mail de inscrição que a AWS envia, senão os alertas não chegam.
 resource "aws_budgets_budget" "account" {
   name         = "${var.project_name}-account-budget"
@@ -8,6 +12,11 @@ resource "aws_budgets_budget" "account" {
   limit_amount = var.budget_limit_usd
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
+
+  cost_types {
+    include_credit = false
+    include_refund = false
+  }
 
   # 50%: só um aviso de que o consumo começou.
   notification {
