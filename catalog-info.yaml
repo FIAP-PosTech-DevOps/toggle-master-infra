@@ -1,0 +1,24 @@
+# Entidade deste repositório no Backstage (toggle-master-backstage).
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: toggle-master-infra
+  title: Infraestrutura (Terraform + pipelines)
+  description: >-
+    Terraform dos 3 ambientes (VPC, EKS, RDS, Redis, SQS, DynamoDB), addons
+    do cluster (ArgoCD, KEDA, OpenBao, External Secrets), workflows
+    reutilizáveis de CI/CD dos serviços e o laboratório Backstage.
+  tags:
+    - terraform
+    - github-actions
+  annotations:
+    github.com/project-slug: FIAP-PosTech-DevOps/toggle-master-infra
+    backstage.io/techdocs-ref: dir:.
+spec:
+  type: infrastructure
+  lifecycle: production
+  owner: group:grupo-fase3
+  system: togglemaster
+  dependsOn:
+    - resource:default/eks-clusters
+    - resource:default/ecr-images

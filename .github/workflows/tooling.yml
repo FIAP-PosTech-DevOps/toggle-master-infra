@@ -1,0 +1,92 @@
+# -----------------------------------------------------------------------------
+# Laboratório Backstage (stack terraform/tooling)
+# -----------------------------------------------------------------------------
+# Separado dos ambientes da aplicação: sobe só quando for usado e é destruído
+# no fim da sessão. Actions > tooling > Run workflow:
+#
+#   plan     mostra o que seria criado
+#   apply    cria a VPC mínima + a EC2 com o Backstage (~5 min até abrir)
+#   destroy  apaga tudo (a role e o ECR ficam no stack global)
+#
+# O Backstage enxerga sozinho os ambientes que estiverem no ar (develop,
+# staging, production) e passa a mostrar os que subirem depois.
+#
+# Pré-requisitos (uma vez): stack global aplicado com o Environment "tooling"
+# em deploy_environments; Environment "tooling" criado neste repositório;
+# imagem publicada pela esteira do toggle-master-backstage; parâmetros
+# /togglemaster/backstage/* no SSM (ver terraform/tooling/README.md).
+# -----------------------------------------------------------------------------
+name: tooling
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "O que fazer com o laboratório Backstage"
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_VERSION: "~1.16"
+  AWS_REGION: us-east-1
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+concurrency:
+  group: terraform-tooling
+  cancel-in-progress: false
+
+jobs:
+  tooling:
+    name: backstage — ${{ inputs.action }}
+    runs-on: ubuntu-latest
+    # O Environment libera a role de apply (trust policy do stack global).
+    environment: tooling
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/togglemaster-gha-terraform-apply
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform ${{ inputs.action }}
+        shell: bash
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -o pipefail
+          case "$ACTION" in
+            plan)    ./terraform/tf.sh tooling plan -no-color -lock-timeout=5m ;;
+            apply)   ./terraform/tf.sh tooling apply -auto-approve -no-color -lock-timeout=5m ;;
+            destroy) ./terraform/tf.sh tooling destroy -auto-approve -no-color -lock-timeout=5m ;;
+          esac
+
+      - name: como abrir o Backstage
+        if: inputs.action == 'apply'
+        shell: bash
+        run: |
+          TUNNEL="$(./terraform/tf.sh tooling output -raw tunnel_command)"
+          {
+            echo "### Backstage no ar"
+            echo "A instalação leva ~5 minutos depois do apply. Na sua máquina (AWS CLI + Session Manager plugin):"
+            echo
+            echo '```bash'
+            echo "$TUNNEL"
+            echo '```'
+            echo
+            echo "Depois abra **http://localhost:7007** e entre com o GitHub."
+            echo
+            echo "**Lembre de rodar o destroy no fim do laboratório.**"
+          } >> "$GITHUB_STEP_SUMMARY"

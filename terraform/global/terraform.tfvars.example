@@ -9,3 +9,7 @@ alert_email = "devops.infra.cloud@gmail.com"
 # github_org       = "FIAP-PosTech-DevOps"
 # budget_limit_usd = "100"
 # ci_push_environments = ["develop", "staging", "production"]
+
+# Laboratório Backstage (docs/backstage-lab.md): ID do repositório
+# toggle-master-backstage, para a esteira dele publicar a imagem no ECR.
+# backstage_repository_id = 1234567890

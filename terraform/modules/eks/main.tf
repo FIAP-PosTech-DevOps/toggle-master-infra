@@ -21,6 +21,25 @@ locals {
       }
     }
   }
+
+  # Acesso SOMENTE LEITURA (laboratório Backstage). A policy gerenciada
+  # AmazonEKSViewPolicy dá get/list/watch nos objetos comuns (sem Secrets).
+  # O grupo backstage-viewers recebe, no cluster-addons, só o port-forward
+  # para a API do ArgoCD e a leitura da senha inicial dele.
+  viewer_access_entries = {
+    for arn in var.cluster_viewer_principal_arns : arn => {
+      principal_arn     = arn
+      kubernetes_groups = ["backstage-viewers"]
+      policy_associations = {
+        view = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
+  }
 }
 
 module "eks" {
@@ -58,7 +77,7 @@ module "eks" {
   # execução e o módulo recriaria o access entry toda vez.
   authentication_mode                      = "API_AND_CONFIG_MAP"
   enable_cluster_creator_admin_permissions = false
-  access_entries                           = local.admin_access_entries
+  access_entries                           = merge(local.admin_access_entries, local.viewer_access_entries)
 
   # Cria o provedor OIDC do cluster no IAM — é o que torna o IRSA possível.
   enable_irsa = true

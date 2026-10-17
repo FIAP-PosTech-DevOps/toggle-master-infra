@@ -1,0 +1,7 @@
+[Unit]
+Description=Atualiza clusters e ArgoCD do Backstage (ambientes no ar)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/backstage/lab-refresh.sh

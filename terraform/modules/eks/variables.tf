@@ -37,6 +37,12 @@ variable "cluster_admin_principal_arns" {
   type        = list(string)
 }
 
+variable "cluster_viewer_principal_arns" {
+  description = "ARNs (roles IAM) que recebem acesso somente leitura via Access Entry (ex.: a EC2 do laboratório Backstage)."
+  type        = list(string)
+  default     = []
+}
+
 variable "node_instance_types" {
   type = list(string)
 }

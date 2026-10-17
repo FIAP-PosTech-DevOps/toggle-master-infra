@@ -11,6 +11,7 @@
 #   ./tf.sh global plan|apply                # 1x por conta
 #   ./tf.sh infra <ambiente> plan|apply|destroy|output ...
 #   ./tf.sh cluster-addons <ambiente> plan|apply|destroy|output ...
+#   ./tf.sh tooling plan|apply|destroy|output   # laboratório Backstage
 #
 #   <ambiente> = develop | staging | production
 #
@@ -28,7 +29,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVIRONMENTS=(develop staging production)
 
 die()   { echo -e "\033[1;31mERRO: $*\033[0m" >&2; exit 1; }
-usage() { sed -n '3,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '3,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 [[ $# -ge 1 ]] || usage 1
 [[ "$1" == "-h" || "$1" == "--help" ]] && usage 0
@@ -37,7 +38,7 @@ command -v terraform >/dev/null || die "terraform não encontrado"
 
 STACK="$1"; shift
 DIR="$ROOT/$STACK"
-[[ -d "$DIR" ]] || die "stack desconhecido: $STACK (use bootstrap, global, infra ou cluster-addons)"
+[[ -d "$DIR" ]] || die "stack desconhecido: $STACK (use bootstrap, global, infra, cluster-addons ou tooling)"
 
 # --- bootstrap: state local, sem backend nem ambiente -----------------------
 if [[ "$STACK" == "bootstrap" ]]; then
@@ -48,8 +49,8 @@ fi
 
 # --- stacks com backend remoto ----------------------------------------------
 case "$STACK" in
-  global)
-    ENV_NAME="global"
+  global|tooling)
+    ENV_NAME="$STACK"
     BACKEND_FILE="$DIR/backend.s3.tfbackend"
     VAR_FILE="$DIR/terraform.tfvars"   # opcional (não versionado)
     ;;

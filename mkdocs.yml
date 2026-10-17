@@ -1,0 +1,11 @@
+# TechDocs (Backstage): o site é gerado a partir de docs/.
+site_name: toggle-master-infra
+docs_dir: docs
+plugins:
+  - techdocs-core
+nav:
+  - Início: index.md
+  - Terraform: terraform.md
+  - Fluxo geral: fluxo-geral.md
+  - CI/CD e GitOps: ci-cd.md
+  - Laboratório Backstage: backstage-lab.md

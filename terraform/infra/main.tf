@@ -34,6 +34,10 @@ module "eks" {
   endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
   cluster_admin_principal_arns = local.cluster_admin_principal_arns
 
+  # Leitura para o laboratório Backstage, se a role dele existir (stack
+  # global). Sem a role, a lista fica vazia e nada muda no cluster.
+  cluster_viewer_principal_arns = sort(tolist(data.aws_iam_roles.backstage.arns))
+
   node_instance_types = var.node_instance_types
   node_capacity_type  = var.node_capacity_type
   node_min_size       = var.node_min_size
