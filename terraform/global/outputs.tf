@@ -19,3 +19,12 @@ output "github_actions_role_arns" {
     terraform_apply = aws_iam_role.gha_terraform_apply.arn
   }
 }
+
+output "backstage" {
+  description = "Peças permanentes do laboratório Backstage (o stack tooling usa)."
+  value = {
+    ecr_repository_url    = aws_ecr_repository.backstage.repository_url
+    role_arn              = aws_iam_role.backstage.arn
+    instance_profile_name = aws_iam_instance_profile.backstage.name
+  }
+}

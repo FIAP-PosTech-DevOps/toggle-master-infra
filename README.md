@@ -28,6 +28,8 @@ Infraestrutura do ToggleMaster, uma plataforma de feature flags composta por 5 m
 10. [Estrutura do repositório](#10-estrutura-do-repositório)
 11. [Troubleshooting](#11-troubleshooting)
 
+Portal do desenvolvedor (opcional): o [laboratório Backstage](docs/backstage-lab.md) reúne repositórios, pipelines, ArgoCD e pods dos 3 ambientes, e sobe à parte só quando for usado.
+
 ---
 
 ## 1. Arquitetura

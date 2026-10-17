@@ -96,9 +96,32 @@ variable "ci_push_environments" {
 }
 
 variable "deploy_environments" {
-  description = "GitHub Environments do repositório de infra que podem assumir a role de apply. Cada um deve ter regra de proteção configurada no GitHub."
+  description = <<-EOT
+    GitHub Environments do repositório de infra que podem assumir a role de
+    apply. Cada um deve ter regra de proteção configurada no GitHub.
+    "tooling" é o laboratório do Backstage (stack terraform/tooling, workflow
+    tooling.yml), separado dos três ambientes da aplicação.
+  EOT
   type        = list(string)
-  default     = ["develop", "staging", "production"]
+  default     = ["develop", "staging", "production", "tooling"]
+}
+
+# --- Backstage (laboratório) -------------------------------------------------
+
+variable "backstage_repository" {
+  description = "Repositório do app Backstage. A esteira dele publica a imagem em togglemaster/backstage."
+  type        = string
+  default     = "toggle-master-backstage"
+}
+
+variable "backstage_repository_id" {
+  description = <<-EOT
+    ID numérico do repositório do Backstage (entra no `sub` imutável do OIDC).
+    Enquanto for null, a esteira do Backstage não recebe credencial da AWS.
+    Consulta: curl -s https://api.github.com/repos/<org>/toggle-master-backstage | jq .id
+  EOT
+  type        = number
+  default     = null
 }
 
 # --- Orçamento ---------------------------------------------------------------

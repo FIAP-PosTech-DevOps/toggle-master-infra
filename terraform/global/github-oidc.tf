@@ -19,7 +19,8 @@
 # Três roles, cada uma com o mínimo que o job precisa:
 #
 #   gha-ecr-push         repos dos serviços, só jobs dos Environments develop,
-#                        staging e production (os jobs de deploy)
+#                        staging e production (os jobs de deploy); e o repo
+#                        do Backstage, só no Environment tooling
 #   gha-terraform-plan   repo de infra, qualquer branch/PR, somente leitura
 #   gha-terraform-apply  repo de infra, só via GitHub Environment (com
 #                        aprovação configurável no GitHub), admin
@@ -50,6 +51,12 @@ locals {
       "${local.repo_subject[repo]}:environment:${env}"
     ]
   ])
+
+  # Esteira do Backstage (job de build dentro do Environment "tooling"). Só
+  # existe depois que o ID do repositório é informado.
+  backstage_push_subjects = var.backstage_repository_id == null ? [] : [
+    "repo:${var.github_org}@${var.github_owner_id}/${var.backstage_repository}@${var.backstage_repository_id}:environment:tooling"
+  ]
 
   apply_subjects = [
     for env in var.deploy_environments :
@@ -94,7 +101,7 @@ data "aws_iam_policy_document" "trust_ecr_push" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = local.ecr_push_subjects
+      values   = concat(local.ecr_push_subjects, local.backstage_push_subjects)
     }
   }
 }
@@ -172,7 +179,7 @@ data "aws_iam_policy_document" "ecr_push" {
       "ecr:PutImage",
       "ecr:UploadLayerPart",
     ]
-    resources = [for r in aws_ecr_repository.services : r.arn]
+    resources = concat([for r in aws_ecr_repository.services : r.arn], [aws_ecr_repository.backstage.arn])
   }
 }
 

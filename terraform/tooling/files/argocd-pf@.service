@@ -1,0 +1,12 @@
+# Port-forward até a API do ArgoCD de um ambiente (%i = develop|staging|production).
+# A porta local vem de /opt/backstage/pf-%i.env (gerado pelo lab-refresh.sh).
+[Unit]
+Description=Port-forward ArgoCD (%i) para o Backstage
+After=network-online.target
+
+[Service]
+EnvironmentFile=/opt/backstage/pf-%i.env
+Environment=KUBECONFIG=/opt/backstage/kubeconfig
+ExecStart=/usr/local/bin/kubectl --context %i -n argocd port-forward svc/argocd-server ${PORT}:80 --address 127.0.0.1
+Restart=always
+RestartSec=10
