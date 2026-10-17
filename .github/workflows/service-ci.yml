@@ -250,9 +250,36 @@ jobs:
         run: |
           [[ -n "$SONAR_TOKEN" ]] || { echo "::error::secret SONAR_TOKEN não configurado (Settings > Secrets > Actions)"; exit 1; }
 
+      # O plano Free do SonarQube Cloud só analisa a branch principal (main) e
+      # os pull requests: em qualquer outra branch o scanner falha com
+      # "Organization is not allowed to access data from non main branches".
+      #
+      #   pull_request                  analisa e aplica o Quality Gate
+      #   push / botão na main          analisa e aplica o Quality Gate
+      #   push em release/*             pula: o código da release só entra
+      #                                 por PR, que já passou pelo Quality Gate
+      #   botão em outra branch         pula (develop): o Quality Gate vale no
+      #     (develop)                   PR dessa branch
+      - name: Analisar este evento no SonarQube?
+        id: sonar
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$EVENT" == "pull_request" || "$REF_NAME" == "$DEFAULT_BRANCH" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SonarQube não roda em '$REF_NAME' (plano Free: só main e pull requests). O código desta branch passa pelo Quality Gate no PR."
+            echo "- SAST: análise do SonarQube pulada em \`$REF_NAME\` (plano Free analisa só a main e os PRs; o Quality Gate é aplicado no PR)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       # qualitygate.wait=true: a etapa espera o resultado do Quality Gate e
       # FALHA se ele for reprovado (ex.: vulnerabilidade no código novo).
       - uses: SonarSource/sonarqube-scan-action@v8.3.0
+        if: steps.sonar.outputs.run == 'true'
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
